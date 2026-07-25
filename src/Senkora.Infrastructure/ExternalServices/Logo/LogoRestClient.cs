@@ -82,6 +82,14 @@ public sealed class LogoRestClient(
         => await SendAsync(HttpMethod.Delete, url, null, accessToken, ct);
 
     /// <summary>POST /api/v1/queries/unsafe — Raw SQL (must be enabled in Logo config)</summary>
+    /// <summary>
+    /// Body'yi oldugu gibi gonderir. string ise ham metin,
+    /// nesne ise JSON'a cevrilir. SQL varyant denemeleri icin kullanilir.
+    /// </summary>
+    public async Task<string> PostRawAsync(
+        string url, object? body, string accessToken, CancellationToken ct = default)
+        => await SendAsync(HttpMethod.Post, url, body, accessToken, ct);
+
     public async Task<string> UnsafeQueryAsync(
         string baseUrl, string sql, string accessToken,
         int cmdTimeoutSeconds = 30, CancellationToken ct = default)

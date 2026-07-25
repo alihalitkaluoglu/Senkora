@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Senkora.Application.Common.Interfaces;
 using Senkora.Domain.Entities.Common;
+using Senkora.Infrastructure.Persistence;
 
 namespace Senkora.Infrastructure.Persistence.Interceptors;
 
@@ -26,6 +27,9 @@ public sealed class AuditInterceptor(ICurrentUser currentUser) : SaveChangesInte
     {
         if (context is null) return;
 
+        // Kalici silme bayragi (ApplicationDbContext uzerinden set edilir)
+        var suppressSoftDelete = context is ApplicationDbContext { SuppressSoftDelete: true };
+
         var actor = (currentUser.IsAuthenticated
             ? currentUser.UserId.ToString()
             : null) ?? "system";
@@ -47,6 +51,9 @@ public sealed class AuditInterceptor(ICurrentUser currentUser) : SaveChangesInte
                     break;
 
                 case EntityState.Deleted:
+                    // Kalici silme istenmisse kaydi gercekten sil
+                    if (suppressSoftDelete) break;
+
                     entry.State = EntityState.Modified;
                     entry.Entity.IsDeleted  = true;
                     entry.Entity.DeletedAt  = now;

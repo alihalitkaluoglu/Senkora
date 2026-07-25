@@ -13,6 +13,7 @@ namespace Senkora.Infrastructure.ExternalServices.Logo;
 /// </summary>
 public sealed class LogoProductService(
     LogoRestClient client,
+    ILogoSqlService sqlService,
     ILogger<LogoProductService> logger) : ILogoProductService
 {
     private static readonly int[] AllowedCardTypes = [1, 12];   // TM, MM
@@ -190,20 +191,28 @@ public sealed class LogoProductService(
             $"FROM LV_{firm}_{period}_STINVTOT GROUP BY STOCKREF",
         };
 
+        string? lastError = null;
+
         foreach (var sql in sqls)
         {
-            try
+            var res = await sqlService.QueryAsync(restUrl, accessToken, sql, 120, ct);
+
+            if (res.Success && res.RawJson is not null)
             {
-                var json = await client.UnsafeQueryAsync(restUrl, sql, accessToken, 120, ct);
-                if (TryFillStock(json, map)) return map;
+                if (TryFillStock(res.RawJson, map))
+                {
+                    logger.LogInformation(
+                        "Stok alindi ({Variant}): {Count} malzeme", res.UsedVariant, map.Count);
+                    return map;
+                }
             }
-            catch (Exception ex)
+            else
             {
-                logger.LogDebug(ex, "Stok sorgusu basarisiz, sonraki deneniyor");
+                lastError = res.Error;
             }
         }
 
-        logger.LogWarning("Stok bilgisi alinamadi (queries/unsafe).");
+        logger.LogWarning("Stok bilgisi alinamadi. Son hata: {Error}", lastError);
         return map;
     }
 

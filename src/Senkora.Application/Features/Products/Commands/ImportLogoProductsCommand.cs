@@ -11,7 +11,11 @@ namespace Senkora.Application.Features.Products.Commands;
 
 /// <summary>
 /// Logo'daki aktif TM(1) ve MM(12) malzemelerini tarar,
-/// Senkora'da OLMAYAN kayitlari ekler. Mevcut kayitlara dokunmaz.
+/// Senkora'da OLMAYAN kayitlari ekler.
+///
+/// Onemli: ProductMappings uzerindeki unique index soft-delete edilmis
+/// kayitlari da kapsar. Bu yuzden silinmis bir kayit tekrar karsimiza
+/// cikarsa yeni satir eklenmez, mevcut satir yeniden canlandirilir.
 /// </summary>
 public sealed record ImportLogoProductsCommand(
     Guid TenantId,
@@ -85,15 +89,20 @@ public sealed class ImportLogoProductsCommandHandler(
             stockMap = [];
         }
 
-        // Mevcut kayitlar — silinmisler dahil (unique index onlari da kapsar)
-        // Silme islemi kalici oldugu icin normal sorgu yeterli
-        var existing = await db.ProductMappings
+        // ── Mevcut kayitlar: SILINMISLER DAHIL ───────────────────────────────
+        // Unique index silinmis satirlari da kapsadigi icin onlari da bilmeliyiz.
+        var existingRows = await db.ProductMappings
+            .IgnoreQueryFilters()
             .Where(p => p.TenantId == request.TenantId && p.WooStoreId == request.WooStoreId)
-            .Select(p => p.LogoItemRef)
+            .Select(p => new { p.LogoItemRef, p.IsDeleted })
             .ToListAsync(ct);
-        var known = new HashSet<long>(existing);
 
-        int scanned = 0, created = 0, exists = 0, priced = 0, stocked = 0;
+        var activeRefs  = new HashSet<long>(
+            existingRows.Where(r => !r.IsDeleted).Select(r => r.LogoItemRef));
+        var deletedRefs = new HashSet<long>(
+            existingRows.Where(r => r.IsDeleted).Select(r => r.LogoItemRef));
+
+        int scanned = 0, created = 0, revived = 0, exists = 0, priced = 0, stocked = 0;
         var offset = 0; var rounds = 0;
         var completed = false;
         string? warning = null;
@@ -121,7 +130,7 @@ public sealed class ImportLogoProductsCommandHandler(
             catch (Exception ex)
             {
                 logger.LogError(ex, "Logo tarama hatasi (offset={Offset})", offset);
-                if (created == 0 && scanned == 0)
+                if (created == 0 && revived == 0 && scanned == 0)
                     return Result<ImportResult>.Failure(
                         $"Logo'dan urun cekilemedi: {Unwrap(ex)}", "FETCH_FAILED");
                 warning = $"Tarama offset={offset} noktasinda kesildi: {Unwrap(ex)}";
@@ -132,8 +141,8 @@ public sealed class ImportLogoProductsCommandHandler(
 
             foreach (var item in page.Items)
             {
-                // Zaten varsa atla — duplicate key hatasini onler
-                if (!known.Add(item.LogicalRef)) { exists++; continue; }
+                // 1) Aktif kayit varsa dokunma
+                if (activeRefs.Contains(item.LogicalRef)) { exists++; continue; }
 
                 var sellPrice = item.SellPrice;
                 var vatRate   = item.VatRate;
@@ -157,32 +166,51 @@ public sealed class ImportLogoProductsCommandHandler(
                 var stock = item.Stock;
                 if (stockMap.TryGetValue(item.LogicalRef, out var qty)) { stock = qty; stocked++; }
 
-                db.ProductMappings.Add(new ProductMapping
+                // 2) Silinmis kayit varsa yeniden canlandir (yeni satir ekleme!)
+                if (deletedRefs.Contains(item.LogicalRef))
+                {
+                    var dead = await db.ProductMappings
+                        .IgnoreQueryFilters()
+                        .FirstOrDefaultAsync(p => p.TenantId   == request.TenantId
+                                               && p.WooStoreId == request.WooStoreId
+                                               && p.LogoItemRef == item.LogicalRef, ct);
+
+                    if (dead is not null)
+                    {
+                        dead.IsDeleted        = false;
+                        dead.DeletedAt        = null;
+                        dead.DeletedBy        = null;
+                        dead.LogoConnectionId = request.LogoConnectionId;
+                        ApplyLogoFields(dead, item, sellPrice, vatRate, stock);
+                        dead.Status           = SyncMappingStatus.Draft;
+                        dead.WooProductId     = null;
+                        dead.WooSku           = Cut(item.Code, 200);
+                        dead.EnrichmentJson   = null;
+                        dead.LastSyncError    = null;
+                        dead.LastSyncedAt     = null;
+
+                        deletedRefs.Remove(item.LogicalRef);
+                        activeRefs.Add(item.LogicalRef);
+                        revived++;
+                        continue;
+                    }
+                }
+
+                // 3) Hic yoksa yeni ekle
+                var mapping = new ProductMapping
                 {
                     TenantId         = request.TenantId,
                     WooStoreId       = request.WooStoreId,
                     LogoConnectionId = request.LogoConnectionId,
                     LogoItemRef      = item.LogicalRef,
-                    LogoItemCode     = Cut(item.Code, 100)!,
-                    LogoItemName     = Cut(item.Name, 500)!,
-                    LogoGroupCode    = Cut(item.GroupCode, 100),
-                    LogoSpecode      = Cut(item.Specode, 100),
-                    LogoAuxDesc      = Cut(item.AuxDesc, 1000),
-                    LogoDescription  = item.Description,
-                    LogoSellPrice    = sellPrice,
-                    LogoSellPrice2   = item.SellPrice2,
-                    LogoVatRate      = vatRate,
-                    LogoStock        = stock,
-                    LogoWeight       = item.Weight,
-                    LogoUnitCode     = Cut(item.UnitCode, 50),
-                    LogoMarkRef      = item.MarkRef,
-                    LogoCardType     = item.CardType,
-                    LogoLastFetched  = DateTime.UtcNow,
                     WooSku           = Cut(item.Code, 200),
                     Status           = SyncMappingStatus.Draft,
                     CreatedBy        = request.TenantId.ToString()
-                });
+                };
+                ApplyLogoFields(mapping, item, sellPrice, vatRate, stock);
 
+                db.ProductMappings.Add(mapping);
+                activeRefs.Add(item.LogicalRef);
                 created++;
             }
 
@@ -207,15 +235,42 @@ public sealed class ImportLogoProductsCommandHandler(
         if (rounds >= MaxRounds) warning = "Guvenlik siniri asildi.";
 
         if (stockMap.Count == 0)
-            warning = (warning is null ? "" : warning + " ") +
-                "Stok bilgisi alinamadi.";
+            warning = (warning is null ? "" : warning + " ") + "Stok bilgisi alinamadi.";
 
         logger.LogInformation(
-            "Import: {Scanned} tarandi, {Created} yeni, {Exists} mevcut, {Priced} fiyat, {Stocked} stok",
-            scanned, created, exists, priced, stocked);
+            "Import: {Scanned} tarandi, {Created} yeni, {Revived} geri getirildi, " +
+            "{Exists} mevcut, {Priced} fiyat, {Stocked} stok",
+            scanned, created, revived, exists, priced, stocked);
 
         return Result<ImportResult>.Success(new ImportResult(
-            scanned, created, exists, priced, stocked, completed, warning));
+            Scanned:       scanned,
+            Created:       created + revived,
+            AlreadyExists: exists,
+            PricesMatched: priced,
+            StockMatched:  stocked,
+            Completed:     completed,
+            Warning:       warning));
+    }
+
+    private static void ApplyLogoFields(
+        ProductMapping m, LogoItemDto item,
+        decimal sellPrice, decimal vatRate, decimal stock)
+    {
+        m.LogoItemCode    = Cut(item.Code, 100)!;
+        m.LogoItemName    = Cut(item.Name, 500)!;
+        m.LogoGroupCode   = Cut(item.GroupCode, 100);
+        m.LogoSpecode     = Cut(item.Specode, 100);
+        m.LogoAuxDesc     = Cut(item.AuxDesc, 1000);
+        m.LogoDescription = item.Description;
+        m.LogoSellPrice   = sellPrice;
+        m.LogoSellPrice2  = item.SellPrice2;
+        m.LogoVatRate     = vatRate;
+        m.LogoStock       = stock;
+        m.LogoWeight      = item.Weight;
+        m.LogoUnitCode    = Cut(item.UnitCode, 50);
+        m.LogoMarkRef     = item.MarkRef;
+        m.LogoCardType    = item.CardType;
+        m.LogoLastFetched = DateTime.UtcNow;
     }
 
     private static string? Cut(string? v, int max)

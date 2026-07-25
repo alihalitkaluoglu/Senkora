@@ -256,3 +256,12 @@ export interface ProductHistory {
   performedBy: string | null;
   createdAt: string;
 }
+
+export interface LogoSqlProbe {
+  variant: string;
+  url: string;
+  success: boolean;
+  rowCount: number;
+  error: string | null;
+  samplePayload: string | null;
+}

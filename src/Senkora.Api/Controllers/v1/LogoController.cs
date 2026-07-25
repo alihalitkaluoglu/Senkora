@@ -91,6 +91,20 @@ public sealed class LogoController(
     }
 
     /// <summary>Fiyat kriterleri icin Logo secim listeleri (proje, TIG, masraf merkezi)</summary>
+    /// <summary>
+    /// Logo REST'in hangi SQL cagri bicimini kabul ettigini test eder.
+    /// Stok ve ticari islem grubu sorgulari calismiyorsa buradan tespit edilir.
+    /// </summary>
+    [HttpGet("connections/{id:guid}/probe-sql")]
+    public async Task<IActionResult> ProbeSql(
+        Guid id, [FromQuery] string? sql = null, CancellationToken ct = default)
+    {
+        var result = await mediator.Send(new ProbeLogoSqlQuery(TenantId, id, sql), ct);
+        if (!result.IsSuccess)
+            return BadRequest(ApiResponse<object>.Fail(result.Error!));
+        return Ok(ApiResponse<List<LogoSqlProbe>>.Ok(result.Data!));
+    }
+
     [HttpGet("connections/{id:guid}/lookups")]
     public async Task<IActionResult> GetLookups(Guid id, CancellationToken ct)
     {

@@ -14,6 +14,7 @@ namespace Senkora.Infrastructure.ExternalServices.Logo;
 /// </summary>
 public sealed class LogoLookupService(
     LogoRestClient client,
+    ILogoSqlService sqlService,
     ILogger<LogoLookupService> logger) : ILogoLookupService
 {
     public async Task<LogoLookupResult> GetAllAsync(
@@ -114,10 +115,14 @@ public sealed class LogoLookupService(
         {
             try
             {
-                // Logo SQL servisi: POST /api/v1/queries/unsafe
-                var json = await client.UnsafeQueryAsync(restUrl, sql, accessToken, 60, ct);
+                var res = await sqlService.QueryAsync(restUrl, accessToken, sql, 60, ct);
+                if (!res.Success || res.RawJson is null)
+                {
+                    errors.Add($"{table}: {Short(res.Error ?? "bilinmeyen hata")}");
+                    continue;
+                }
 
-                var arr = Extract(json, out var apiErr);
+                var arr = Extract(res.RawJson, out var apiErr);
                 if (apiErr is not null) { errors.Add($"{table}: {Short(apiErr)}"); continue; }
                 if (arr.Count == 0)     { errors.Add($"{table}: bos"); continue; }
 

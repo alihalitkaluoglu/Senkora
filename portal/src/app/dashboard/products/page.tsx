@@ -4,6 +4,7 @@ import { productApi, logoApi, wooApi } from "@/lib/api";
 import { DASH_CSS } from "@/lib/dashboardCss";
 import { apiError } from "@/lib/errorMessage";
 import type {
+  LogoSqlProbe,
   ProductMapping, LogoConnection, WooStore,
   ImportResult, RefreshResult, LogoFetchDiagnostics,
 } from "@/types/api";
@@ -36,6 +37,8 @@ export default function ProductsPage() {
   const [importErr, setImportErr]   = useState("");
   const [diag, setDiag]             = useState<LogoFetchDiagnostics | null>(null);
   const [diagBusy, setDiagBusy]     = useState(false);
+  const [sqlProbes, setSqlProbes]   = useState<LogoSqlProbe[] | null>(null);
+  const [probeBusy, setProbeBusy]   = useState(false);
 
   // Refresh
   const [showRefresh, setShowRefresh] = useState(false);
@@ -89,6 +92,20 @@ export default function ProductsPage() {
 
   const connReady = !!conn.logoConnectionId && !!conn.wooStoreId;
 
+  async function runPurge() {
+    if (!confirm("Daha önce silinmiş ürün kayıtları veritabanından tamamen kaldırılacak. Devam edilsin mi?"))
+      return;
+    setImporting(true);
+    try {
+      const r = await productApi.purgeDeleted();
+      setImportErr("");
+      setImportRes(null);
+      showToast(true, `${r.data.data} silinmiş kayıt temizlendi. Şimdi tekrar içe aktarabilirsiniz.`);
+    } catch (e) {
+      setImportErr(apiError(e, "Temizlik başarısız."));
+    } finally { setImporting(false); }
+  }
+
   async function runImport() {
     if (!connReady) { setImportErr("Logo bağlantısı ve mağaza seçin."); return; }
     setImporting(true); setImportErr(""); setImportRes(null);
@@ -98,6 +115,17 @@ export default function ProductsPage() {
       load();
     } catch (e) { setImportErr(apiError(e, "İçe aktarma başarısız.")); }
     finally { setImporting(false); }
+  }
+
+  async function runSqlProbe() {
+    if (!conn.logoConnectionId) { setImportErr("Logo bağlantısı seçin."); return; }
+    setProbeBusy(true); setSqlProbes(null);
+    try {
+      const r = await logoApi.probeSql(conn.logoConnectionId);
+      setSqlProbes(r.data.data ?? []);
+    } catch (e) {
+      setImportErr(apiError(e, "SQL testi çalıştırılamadı."));
+    } finally { setProbeBusy(false); }
   }
 
   async function runDiagnose() {
@@ -282,11 +310,72 @@ export default function ProductsPage() {
                 <span style={{ fontSize: 12, color: "#8b949e" }}>
                   Logo yanıtını incele
                 </span>
-                <button className="btn btn-ghost btn-sm" disabled={diagBusy}
-                  onClick={runDiagnose}>
-                  {diagBusy ? "Test..." : "Bağlantıyı Test Et"}
-                </button>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button className="btn btn-ghost btn-sm" disabled={importing}
+                    title="Duplicate key hatası alıyorsanız bir kez çalıştırın"
+                    onClick={runPurge}>
+                    Silinmişleri Temizle
+                  </button>
+                  <button className="btn btn-ghost btn-sm" disabled={probeBusy}
+                    title="Logo'nun hangi SQL çağrı biçimini kabul ettiğini test eder"
+                    onClick={runSqlProbe}>
+                    {probeBusy ? "SQL..." : "SQL Testi"}
+                  </button>
+                  <button className="btn btn-ghost btn-sm" disabled={diagBusy}
+                    onClick={runDiagnose}>
+                    {diagBusy ? "Test..." : "Bağlantıyı Test Et"}
+                  </button>
+                </div>
               </div>
+              {sqlProbes && (
+                <div style={{ background: "#0d1117", border: "1px solid #21262d",
+                  borderRadius: 8, padding: 12, fontSize: 11.5, marginBottom: 10 }}>
+                  <div style={{ color: "#79c0ff", fontWeight: 600, marginBottom: 8 }}>
+                    Logo SQL Çağrı Biçimi Testi
+                  </div>
+                  {sqlProbes.map((p, i) => (
+                    <div key={i} style={{
+                      padding: "6px 0",
+                      borderBottom: i < sqlProbes.length - 1 ? "1px solid #161b22" : "none",
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between",
+                        alignItems: "baseline", gap: 8 }}>
+                        <span style={{ color: p.success ? "#3fb950" : "#6e7681",
+                          fontWeight: p.success ? 600 : 400 }}>
+                          {p.success ? "✓" : "✗"} {p.variant}
+                        </span>
+                        {p.success && (
+                          <span style={{ color: "#3fb950", fontSize: 10.5 }}>
+                            {p.rowCount} satır
+                          </span>
+                        )}
+                      </div>
+                      {p.error && (
+                        <div style={{ color: "#8b949e", fontSize: 10, marginTop: 3,
+                          wordBreak: "break-word" }}>
+                          {p.error}
+                        </div>
+                      )}
+                      {p.success && p.samplePayload && (
+                        <div style={{ color: "#484f58", fontSize: 10, marginTop: 3,
+                          fontFamily: "monospace", wordBreak: "break-all" }}>
+                          {p.samplePayload}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {!sqlProbes.some(p => p.success) && (
+                    <div style={{ marginTop: 10, padding: "8px 10px",
+                      background: "rgba(240,136,62,.1)", borderRadius: 6,
+                      color: "#f0883e", fontSize: 10.5, lineHeight: 1.5 }}>
+                      Hiçbir SQL biçimi çalışmadı. Logo REST kurulumunda
+                      &quot;Generic SQL Sorgusu&quot; servisi kapalı olabilir.
+                      Bu durumda stok ve ticari işlem grubu bilgileri alınamaz.
+                    </div>
+                  )}
+                </div>
+              )}
+
               {diag && (
                 <div style={{ background: "#0d1117", border: "1px solid #21262d",
                   borderRadius: 8, padding: 12, fontSize: 11.5 }}>

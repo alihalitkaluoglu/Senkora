@@ -96,6 +96,21 @@ public sealed class ProductsController(
         return Ok(ApiResponse<int>.Ok(result.Data, $"{result.Data} urun silindi."));
     }
 
+    /// <summary>
+    /// Onceden soft-delete edilmis urun kayitlarini veritabanindan tamamen siler.
+    /// "Duplicate key" hatasi aliniyorsa bir kez calistirilmalidir.
+    /// </summary>
+    [HttpPost("purge-deleted")]
+    [Authorize(Policy = "SyncManager")]
+    public async Task<IActionResult> PurgeDeleted(CancellationToken ct)
+    {
+        var result = await mediator.Send(new PurgeDeletedProductsCommand(TenantId), ct);
+        if (!result.IsSuccess)
+            return BadRequest(ApiResponse<object>.Fail(result.Error!));
+        return Ok(ApiResponse<int>.Ok(result.Data,
+            $"{result.Data} silinmis kayit temizlendi."));
+    }
+
     /// <summary>Urun aktarim ve degisiklik gecmisi</summary>
     [HttpGet("{id:guid}/history")]
     public async Task<IActionResult> GetHistory(Guid id, CancellationToken ct)

@@ -6,6 +6,7 @@ import type {
   WooCategory, PagedResult, LogoFetchDiagnostics,
   ImportResult, RefreshResult, ProductHistory,
   LogoLookupResult,
+  LogoSqlProbe,
 } from '@/types/api';
 
 const BASE = 'http://localhost:5000';
@@ -61,6 +62,10 @@ export const logoApi = {
     username: string; password: string; firmNo: number;
   }) => api.post<ApiResponse<LogoTestResult>>('api/v1/logo/connections/test', d),
 
+  probeSql: (connectionId: string, sql?: string) =>
+    api.get<ApiResponse<LogoSqlProbe[]>>(
+      `api/v1/logo/connections/${connectionId}/probe-sql`, { params: { sql } }),
+
   lookups: (connectionId: string) =>
     api.get<ApiResponse<LogoLookupResult>>(
       `api/v1/logo/connections/${connectionId}/lookups`),
@@ -115,6 +120,9 @@ export const productApi = {
 
   deleteMany: (d: { ids?: string[]; deleteAll?: boolean; statusFilter?: string }) =>
     api.post<ApiResponse<number>>('api/v1/products/delete', d),
+
+  purgeDeleted: () =>
+    api.post<ApiResponse<number>>('api/v1/products/purge-deleted'),
 
   history: (id: string) =>
     api.get<ApiResponse<ProductHistory[]>>(`api/v1/products/${id}/history`),

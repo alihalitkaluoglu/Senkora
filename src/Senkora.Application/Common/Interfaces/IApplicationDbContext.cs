@@ -43,5 +43,12 @@ public interface IApplicationDbContext
     DbSet<ProductSyncHistory>   ProductSyncHistories  { get; }
     DbSet<OrderMapping>      OrderMappings      { get; }
 
+    /// <summary>
+    /// true yapilirsa bu SaveChanges cagrisinda silme islemleri
+    /// soft delete'e cevrilmez, kayitlar veritabanindan kalici olarak silinir.
+    /// Islem sonunda otomatik olarak false'a doner.
+    /// </summary>
+    bool SuppressSoftDelete { get; set; }
+
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

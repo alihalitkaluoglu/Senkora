@@ -13,6 +13,12 @@ namespace Senkora.Infrastructure.Persistence;
 public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
     : DbContext(options), IApplicationDbContext
 {
+    /// <summary>
+    /// true iken AuditInterceptor silme islemlerini soft delete'e cevirmez.
+    /// Kalici silme gereken yerlerde kullanilir (orn. urun eslemeleri).
+    /// </summary>
+    public bool SuppressSoftDelete { get; set; }
+
     // Master
     public DbSet<Tenant>            Tenants            => Set<Tenant>();
     public DbSet<TenantSettings>    TenantSettings     => Set<TenantSettings>();
