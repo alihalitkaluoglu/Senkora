@@ -174,13 +174,28 @@ public sealed class LogoProductService(
         var firm   = firmNo.ToString("D3");
         var period = periodNo.ToString("D2");
 
+        // Logo'da stok LG_{firma}_{donem}_STINVTOT tablosunda tutulur.
+        // Malzeme eslesmesi: LG_{firma}_ITEMS.LOGICALREF = STINVTOT.STOCKREF
         var sqls = new[]
         {
-            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND FROM LV_{firm}_{period}_STINVTOT " +
-            $"WHERE INVENNO = -1 GROUP BY STOCKREF",
+            // Ana sorgu — kullanici tarafindan dogrulanmis tablo yapisi
+            $"SELECT S.STOCKREF, SUM(S.ONHAND) AS ONHAND " +
+            $"FROM LG_{firm}_{period}_STINVTOT S " +
+            $"INNER JOIN LG_{firm}_ITEMS I ON I.LOGICALREF = S.STOCKREF " +
+            $"WHERE I.ACTIVE = 0 " +
+            $"GROUP BY S.STOCKREF",
 
-            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND FROM LV_{firm}_{period}_STINVTOT " +
-            $"GROUP BY STOCKREF",
+            // Join'siz sade surum
+            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND " +
+            $"FROM LG_{firm}_{period}_STINVTOT GROUP BY STOCKREF",
+
+            // Sadece ana ambar toplami
+            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND " +
+            $"FROM LG_{firm}_{period}_STINVTOT WHERE INVENNO = -1 GROUP BY STOCKREF",
+
+            // Bazi kurulumlarda view (LV_) olarak tanimli olabilir
+            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND " +
+            $"FROM LV_{firm}_{period}_STINVTOT GROUP BY STOCKREF",
         };
 
         // 1) GET ile queries

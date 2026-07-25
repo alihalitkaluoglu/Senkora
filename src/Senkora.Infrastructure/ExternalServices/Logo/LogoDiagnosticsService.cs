@@ -105,7 +105,7 @@ public sealed class LogoDiagnosticsService(
         // ── 3. Stok sorgusu (SQL yetkisi var mi?) ────────────────────────────
         var firm   = firmNo.ToString("D3");
         var period = periodNo.ToString("D2");
-        var stockSql = $"SELECT TOP 5 STOCKREF, ONHAND FROM LV_{firm}_{period}_STINVTOT";
+        var stockSql = $"SELECT TOP 5 STOCKREF, ONHAND FROM LG_{firm}_{period}_STINVTOT";
 
         bool    stockOk    = false;
         var     stockCount = 0;

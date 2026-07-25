@@ -8,6 +8,11 @@ using Senkora.Domain.Enums;
 
 namespace Senkora.Application.Features.Products.Commands;
 
+/// <summary>
+/// ESKI API — geriye donuk uyumluluk icin korunuyor.
+/// Yeni gelistirmelerde <see cref="ImportLogoProductsCommand"/> kullanilmalidir.
+/// Belirli bir offset/limit araligindaki kayitlari ceker.
+/// </summary>
 public sealed record FetchLogoProductsCommand(
     Guid TenantId,
     Guid LogoConnectionId,
@@ -20,7 +25,7 @@ public sealed record FetchLogoProductsResult(
 
 public sealed class FetchLogoProductsCommandHandler(
     IApplicationDbContext db,
-    ILogoConnectionResolver logoResolver,
+    ILogoConnectionResolver resolver,
     ILogoProductService productService,
     ILogger<FetchLogoProductsCommandHandler> logger)
     : IRequestHandler<FetchLogoProductsCommand, Result<FetchLogoProductsResult>>
@@ -28,12 +33,10 @@ public sealed class FetchLogoProductsCommandHandler(
     public async Task<Result<FetchLogoProductsResult>> Handle(
         FetchLogoProductsCommand request, CancellationToken ct)
     {
-        // 1. Baglanti bilgilerini al (sifre cozme + token alma)
-        LogoConnectionInfo connInfo;
+        LogoConnectionInfo conn;
         try
         {
-            connInfo = await logoResolver.ResolveAsync(
-                request.TenantId, request.LogoConnectionId, ct);
+            conn = await resolver.ResolveAsync(request.TenantId, request.LogoConnectionId, ct);
         }
         catch (Exception ex)
         {
@@ -41,13 +44,12 @@ public sealed class FetchLogoProductsCommandHandler(
                 $"Logo baglantisi kurulamadi: {ex.Message}", "CONNECTION_FAILED");
         }
 
-        // 2. Logo'dan urunleri cek
-        List<LogoItemDto> items;
+        LogoItemPage page;
         try
         {
-            items = await productService.FetchItemsAsync(
-                connInfo.RestUrl, connInfo.AccessToken,
-                connInfo.FirmNo, request.Offset, request.Limit, ct);
+            page = await productService.FetchItemsAsync(
+                conn.RestUrl, conn.AccessToken, conn.FirmNo,
+                request.Offset, request.Limit, ct);
         }
         catch (Exception ex)
         {
@@ -56,88 +58,73 @@ public sealed class FetchLogoProductsCommandHandler(
                 $"Logo'dan urun cekilemedi: {ex.Message}", "FETCH_FAILED");
         }
 
-        if (items.Count == 0)
+        if (page.Items.Count == 0)
             return Result<FetchLogoProductsResult>.Success(
-                new FetchLogoProductsResult(0, 0, 0, 0));
+                new FetchLogoProductsResult(page.RawScanned, 0, 0, 0));
 
-        // 3. Mevcut mapping'leri yukle
         var existing = await db.ProductMappings
-            .Where(p => p.TenantId == request.TenantId
-                && p.WooStoreId == request.WooStoreId)
+            .IgnoreQueryFilters()
+            .Where(p => p.TenantId == request.TenantId && p.WooStoreId == request.WooStoreId)
             .Select(p => p.LogoItemRef)
             .ToListAsync(ct);
-        var existingSet = new HashSet<long>(existing);
+        var known = new HashSet<long>(existing);
 
         int created = 0, updated = 0;
-        const int skipped = 0;
 
-        foreach (var item in items)
+        foreach (var item in page.Items)
         {
-            if (existingSet.Contains(item.LogicalRef))
+            if (known.Contains(item.LogicalRef))
             {
-                var mapping = await db.ProductMappings.FirstOrDefaultAsync(
+                var m = await db.ProductMappings.FirstOrDefaultAsync(
                     p => p.TenantId == request.TenantId
                       && p.LogoItemRef == item.LogicalRef
                       && p.WooStoreId == request.WooStoreId, ct);
 
-                if (mapping is not null)
+                if (m is not null)
                 {
-                    mapping.LogoItemCode    = item.Code;
-                    mapping.LogoItemName    = item.Name;
-                    mapping.LogoGroupCode   = item.GroupCode;
-                    mapping.LogoSpecode     = item.Specode;
-                    mapping.LogoAuxDesc     = item.AuxDesc;
-                    mapping.LogoDescription = item.Description;
-                    mapping.LogoSellPrice   = item.SellPrice;
-                    mapping.LogoSellPrice2  = item.SellPrice2;
-                    mapping.LogoVatRate     = item.VatRate;
-                    mapping.LogoStock       = item.Stock;
-                    mapping.LogoWeight      = item.Weight;
-                    mapping.LogoUnitCode    = item.UnitCode;
-                    mapping.LogoMarkRef     = item.MarkRef;
-                    mapping.LogoCardType    = item.CardType;
-                    mapping.LogoLastFetched = DateTime.UtcNow;
+                    m.LogoItemName    = item.Name;
+                    m.LogoSellPrice   = item.SellPrice;
+                    m.LogoStock       = item.Stock;
+                    m.LogoVatRate     = item.VatRate;
+                    m.LogoLastFetched = DateTime.UtcNow;
                     updated++;
                 }
+                continue;
             }
-            else
+
+            db.ProductMappings.Add(new ProductMapping
             {
-                db.ProductMappings.Add(new ProductMapping
-                {
-                    TenantId         = request.TenantId,
-                    WooStoreId       = request.WooStoreId,
-                    LogoConnectionId = request.LogoConnectionId,
-                    LogoItemRef      = item.LogicalRef,
-                    LogoItemCode     = item.Code,
-                    LogoItemName     = item.Name,
-                    LogoGroupCode    = item.GroupCode,
-                    LogoSpecode      = item.Specode,
-                    LogoAuxDesc      = item.AuxDesc,
-                    LogoDescription  = item.Description,
-                    LogoSellPrice    = item.SellPrice,
-                    LogoSellPrice2   = item.SellPrice2,
-                    LogoVatRate      = item.VatRate,
-                    LogoStock        = item.Stock,
-                    LogoWeight       = item.Weight,
-                    LogoUnitCode     = item.UnitCode,
-                    LogoMarkRef      = item.MarkRef,
-                    LogoCardType     = item.CardType,
-                    LogoLastFetched  = DateTime.UtcNow,
-                    WooSku           = item.Code,
-                    Status           = SyncMappingStatus.Draft,
-                    CreatedBy        = request.TenantId.ToString()
-                });
-                created++;
-            }
+                TenantId         = request.TenantId,
+                WooStoreId       = request.WooStoreId,
+                LogoConnectionId = request.LogoConnectionId,
+                LogoItemRef      = item.LogicalRef,
+                LogoItemCode     = item.Code,
+                LogoItemName     = item.Name,
+                LogoGroupCode    = item.GroupCode,
+                LogoSpecode      = item.Specode,
+                LogoAuxDesc      = item.AuxDesc,
+                LogoDescription  = item.Description,
+                LogoSellPrice    = item.SellPrice,
+                LogoSellPrice2   = item.SellPrice2,
+                LogoVatRate      = item.VatRate,
+                LogoStock        = item.Stock,
+                LogoWeight       = item.Weight,
+                LogoUnitCode     = item.UnitCode,
+                LogoMarkRef      = item.MarkRef,
+                LogoCardType     = item.CardType,
+                LogoLastFetched  = DateTime.UtcNow,
+                WooSku           = item.Code,
+                Status           = SyncMappingStatus.Draft,
+                CreatedBy        = request.TenantId.ToString()
+            });
+
+            known.Add(item.LogicalRef);
+            created++;
         }
 
         await db.SaveChangesAsync(ct);
 
-        logger.LogInformation(
-            "FetchLogoProducts: {Fetched} fetched, {Created} new, {Updated} updated",
-            items.Count, created, updated);
-
         return Result<FetchLogoProductsResult>.Success(
-            new FetchLogoProductsResult(items.Count, created, updated, skipped));
+            new FetchLogoProductsResult(page.RawScanned, created, updated, 0));
     }
 }
