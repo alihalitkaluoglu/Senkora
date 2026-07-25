@@ -12,12 +12,15 @@ namespace Senkora.Application.Features.Products.Commands;
 /// <summary>
 /// Mevcut urunlerin Logo verilerini gunceller.
 /// Zenginlestirme verisine (gorsel, kategori, etiket) DOKUNMAZ.
+///
+/// Performans: Her urun icin ayri istek yerine Logo katalogu
+/// sayfa sayfa taranir ve bellekte eslestirilir.
 /// </summary>
 public sealed record RefreshLogoProductsCommand(
     Guid TenantId,
     Guid LogoConnectionId,
     Guid WooStoreId,
-    bool PreviewOnly = false)   // true = sadece degisiklik ozeti
+    bool PreviewOnly = false)
     : IRequest<Result<RefreshResult>>;
 
 public sealed record RefreshResult(
@@ -44,6 +47,9 @@ public sealed class RefreshLogoProductsCommandHandler(
     ILogger<RefreshLogoProductsCommandHandler> logger)
     : IRequestHandler<RefreshLogoProductsCommand, Result<RefreshResult>>
 {
+    private const int ScanPerRound = 200;
+    private const int MaxRounds    = 500;
+
     public async Task<Result<RefreshResult>> Handle(
         RefreshLogoProductsCommand request, CancellationToken ct)
     {
@@ -69,6 +75,40 @@ public sealed class RefreshLogoProductsCommandHandler(
             .FirstOrDefaultAsync(s => s.Id == request.WooStoreId
                                    && s.TenantId == request.TenantId, ct);
 
+        // ── Logo katalogunu TOPLU tara (tek tek istek atma) ──────────────────
+        var logoItems = new Dictionary<long, LogoItemDto>();
+        var offset = 0; var rounds = 0;
+
+        while (rounds < MaxRounds)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            LogoItemPage page;
+            try
+            {
+                page = await logoService.FetchItemsAsync(
+                    conn.RestUrl, conn.AccessToken, conn.FirmNo, offset, ScanPerRound, ct);
+            }
+            catch (Exception ex)
+            {
+                if (logoItems.Count == 0)
+                    return Result<RefreshResult>.Failure(
+                        $"Logo katalogu okunamadi: {ex.Message}", "FETCH_FAILED");
+
+                logger.LogWarning(ex, "Tarama offset={Offset} noktasinda kesildi", offset);
+                break;
+            }
+
+            foreach (var it in page.Items) logoItems[it.LogicalRef] = it;
+
+            offset = page.NextOffset;
+            rounds++;
+            if (!page.HasMore) break;
+        }
+
+        logger.LogInformation("Refresh: Logo'dan {Count} malzeme okundu", logoItems.Count);
+
+        // ── Fiyat ve stok ────────────────────────────────────────────────────
         Dictionary<long, List<LogoItemPriceDto>> priceGroups;
         try
         {
@@ -85,6 +125,7 @@ public sealed class RefreshLogoProductsCommandHandler(
         }
         catch { stockMap = []; }
 
+        // ── Karsilastir ve guncelle ──────────────────────────────────────────
         int updated = 0, unchanged = 0, notFound = 0, priced = 0;
         var changes = new List<ProductChangePreview>();
         var actor   = currentUser.Email;
@@ -93,10 +134,7 @@ public sealed class RefreshLogoProductsCommandHandler(
         {
             ct.ThrowIfCancellationRequested();
 
-            var item = await logoService.FetchItemByRefAsync(
-                conn.RestUrl, conn.AccessToken, m.LogoItemRef, ct);
-
-            if (item is null) { notFound++; continue; }
+            if (!logoItems.TryGetValue(m.LogoItemRef, out var item)) { notFound++; continue; }
 
             var newPrice = item.SellPrice;
             var newVat   = item.VatRate;
@@ -122,7 +160,6 @@ public sealed class RefreshLogoProductsCommandHandler(
 
             var diff = new Dictionary<string, (string? Old, string? New)>();
 
-            // Metin alanlari
             void Track(string field, string? oldV, string? newV)
             {
                 var o = (oldV ?? "").Trim();
@@ -131,7 +168,6 @@ public sealed class RefreshLogoProductsCommandHandler(
                     diff[field] = (o, n);
             }
 
-            // Sayisal alanlar — 0.0000 ile 0 ayni sayilir
             void TrackNum(string field, decimal oldV, decimal newV)
             {
                 if (decimal.Round(oldV, 4) == decimal.Round(newV, 4)) return;
@@ -140,13 +176,13 @@ public sealed class RefreshLogoProductsCommandHandler(
                     newV.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture));
             }
 
-            Track("Ad",      m.LogoItemName,  item.Name);
+            Track("Ad",         m.LogoItemName,  item.Name);
             TrackNum("Fiyat",   m.LogoSellPrice, newPrice);
             TrackNum("KDV",     m.LogoVatRate,   newVat);
             TrackNum("Stok",    m.LogoStock,     newStock);
-            Track("Grup",    m.LogoGroupCode, item.GroupCode);
+            Track("Grup",       m.LogoGroupCode, item.GroupCode);
             TrackNum("Agirlik", m.LogoWeight,    item.Weight);
-            Track("Birim",   m.LogoUnitCode,  item.UnitCode);
+            Track("Birim",      m.LogoUnitCode,  item.UnitCode);
 
             if (diff.Count == 0) { unchanged++; continue; }
 
@@ -193,8 +229,9 @@ public sealed class RefreshLogoProductsCommandHandler(
             await db.SaveChangesAsync(ct);
 
         logger.LogInformation(
-            "Refresh {Mode}: {Total} urun, {Updated} guncellendi",
-            request.PreviewOnly ? "ONIZLEME" : "UYGULANDI", mappings.Count, updated);
+            "Refresh {Mode}: {Total} urun, {Updated} guncellendi, {NotFound} Logo'da yok",
+            request.PreviewOnly ? "ONIZLEME" : "UYGULANDI",
+            mappings.Count, updated, notFound);
 
         return Result<RefreshResult>.Success(new RefreshResult(
             mappings.Count, updated, unchanged, notFound, priced,

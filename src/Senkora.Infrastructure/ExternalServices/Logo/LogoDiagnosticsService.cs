@@ -113,8 +113,7 @@ public sealed class LogoDiagnosticsService(
 
         try
         {
-            var url  = $"{baseUrl}/api/v1/queries?tsql={Uri.EscapeDataString(stockSql)}";
-            var json = await client.GetAsync(url, accessToken, ct);
+            var json = await client.UnsafeQueryAsync(restUrl, stockSql, accessToken, 60, ct);
             var arr  = ExtractArray(json, out var apiErr);
 
             if (apiErr is not null)

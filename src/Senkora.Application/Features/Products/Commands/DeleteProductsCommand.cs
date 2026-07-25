@@ -7,13 +7,17 @@ using Senkora.Application.Common.Models;
 namespace Senkora.Application.Features.Products.Commands;
 
 /// <summary>
-/// Secilen urun eslemelerini siler (soft delete).
-/// WooCommerce'e gonderilmis urunler WooCommerce'de kalir, sadece esleme kaydi silinir.
+/// Secilen urun eslemelerini KALICI olarak siler.
+///
+/// ExecuteDeleteAsync kullanilir cunku AuditInterceptor normal silmeleri
+/// soft delete'e cevirir. ProductMappings uzerindeki
+/// (TenantId, LogoItemRef, WooStoreId) unique index silinmis kayitlari da
+/// kapsadigi icin soft delete yapilirsa ayni urun tekrar ice aktarilamaz.
 /// </summary>
 public sealed record DeleteProductsCommand(
     Guid       TenantId,
     List<Guid> ProductMappingIds,
-    bool       DeleteAll = false,
+    bool       DeleteAll    = false,
     string?    StatusFilter = null) : IRequest<Result<int>>;
 
 public sealed class DeleteProductsCommandHandler(
@@ -26,6 +30,7 @@ public sealed class DeleteProductsCommandHandler(
         DeleteProductsCommand request, CancellationToken ct)
     {
         var query = db.ProductMappings
+            .IgnoreQueryFilters()
             .Where(p => p.TenantId == request.TenantId);
 
         if (!request.DeleteAll)
@@ -42,23 +47,23 @@ public sealed class DeleteProductsCommandHandler(
             query = query.Where(p => p.Status == status);
         }
 
-        var items = await query.ToListAsync(ct);
-        if (items.Count == 0)
-            return Result<int>.Success(0);
+        // Silinecek ID'leri al (tarihce temizligi icin)
+        var ids = await query.Select(p => p.Id).ToListAsync(ct);
+        if (ids.Count == 0) return Result<int>.Success(0);
 
-        var now   = DateTime.UtcNow;
-        var actor = currentUser.Email;
+        // Bagli tarihce kayitlarini kalici sil
+        await db.ProductSyncHistories
+            .IgnoreQueryFilters()
+            .Where(h => h.TenantId == request.TenantId && ids.Contains(h.ProductMappingId))
+            .ExecuteDeleteAsync(ct);
 
-        foreach (var item in items)
-        {
-            item.IsDeleted = true;
-            item.DeletedAt = now;
-            item.DeletedBy = actor;
-        }
+        // Eslemeleri kalici sil — AuditInterceptor'i bypass eder
+        var deleted = await query.ExecuteDeleteAsync(ct);
 
-        await db.SaveChangesAsync(ct);
+        logger.LogInformation(
+            "{Count} urun eslemesi kalici olarak silindi ({Actor})",
+            deleted, currentUser.Email);
 
-        logger.LogInformation("{Count} urun eslemesi silindi ({Actor})", items.Count, actor);
-        return Result<int>.Success(items.Count);
+        return Result<int>.Success(deleted);
     }
 }

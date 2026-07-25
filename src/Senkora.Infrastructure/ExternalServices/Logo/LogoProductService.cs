@@ -1,4 +1,3 @@
-using System.Text;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
 using Senkora.Application.Common.Interfaces;
@@ -159,26 +158,23 @@ public sealed class LogoProductService(
 
     // ── STOK ──────────────────────────────────────────────────────────────────
     /// <summary>
-    /// Logo REST items endpoint'i ONHAND dondurmez.
-    /// Stok icin sirayla su yontemler denenir:
-    ///   1) /api/v1/queries?tsql=...            (GET)
-    ///   2) /api/v1/queries  body: {"tsql":...} (POST)
-    ///   3) /api/v1/items?fields=...,ONHAND     (bazi surumlerde calisir)
+    /// Logo'da stok LG_{firma}_{donem}_STINVTOT tablosunda tutulur.
+    /// REST items endpoint'i ONHAND dondurmez.
+    ///
+    /// Logo SQL servisi:  POST /api/v1/queries/unsafe?cmdTimeout=N
+    ///                    Body: "SELECT ..."  (JSON string)
     /// </summary>
     public async Task<Dictionary<long, decimal>> FetchStockAsync(
         string restUrl, string accessToken,
         int firmNo, int periodNo, CancellationToken ct = default)
     {
         var map    = new Dictionary<long, decimal>();
-        var baseUrl= restUrl.TrimEnd('/');
         var firm   = firmNo.ToString("D3");
         var period = periodNo.ToString("D2");
 
-        // Logo'da stok LG_{firma}_{donem}_STINVTOT tablosunda tutulur.
-        // Malzeme eslesmesi: LG_{firma}_ITEMS.LOGICALREF = STINVTOT.STOCKREF
         var sqls = new[]
         {
-            // Ana sorgu — kullanici tarafindan dogrulanmis tablo yapisi
+            // Aktif malzemelerin ambar toplami
             $"SELECT S.STOCKREF, SUM(S.ONHAND) AS ONHAND " +
             $"FROM LG_{firm}_{period}_STINVTOT S " +
             $"INNER JOIN LG_{firm}_ITEMS I ON I.LOGICALREF = S.STOCKREF " +
@@ -189,76 +185,25 @@ public sealed class LogoProductService(
             $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND " +
             $"FROM LG_{firm}_{period}_STINVTOT GROUP BY STOCKREF",
 
-            // Sadece ana ambar toplami
-            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND " +
-            $"FROM LG_{firm}_{period}_STINVTOT WHERE INVENNO = -1 GROUP BY STOCKREF",
-
-            // Bazi kurulumlarda view (LV_) olarak tanimli olabilir
+            // View olarak tanimliysa
             $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND " +
             $"FROM LV_{firm}_{period}_STINVTOT GROUP BY STOCKREF",
         };
 
-        // 1) GET ile queries
         foreach (var sql in sqls)
         {
             try
             {
-                var url  = $"{baseUrl}/api/v1/queries?tsql={Uri.EscapeDataString(sql)}";
-                var json = await client.GetAsync(url, accessToken, ct);
+                var json = await client.UnsafeQueryAsync(restUrl, sql, accessToken, 120, ct);
                 if (TryFillStock(json, map)) return map;
             }
-            catch (Exception ex) { logger.LogDebug(ex, "Stok GET sorgusu basarisiz"); }
-        }
-
-        // 2) POST ile queries
-        foreach (var sql in sqls)
-        {
-            try
+            catch (Exception ex)
             {
-                var url  = $"{baseUrl}/api/v1/queries";
-                var json = await client.PostAsync(url, new { tsql = sql }, accessToken, ct);
-                if (TryFillStock(json, map)) return map;
-            }
-            catch (Exception ex) { logger.LogDebug(ex, "Stok POST sorgusu basarisiz"); }
-        }
-
-        // 3) items uzerinden ONHAND alani
-        try
-        {
-            var offset = 0;
-            while (true)
-            {
-                ct.ThrowIfCancellationRequested();
-                var url = $"{baseUrl}/api/v1/items?offset={offset}&limit=25" +
-                          $"&fields={Uri.EscapeDataString("INTERNAL_REFERENCE,ONHAND")}";
-                var json = await client.GetAsync(url, accessToken, ct);
-                var arr  = ExtractArray(json, out var apiErr);
-                if (apiErr is not null || arr.Count == 0) break;
-
-                var found = false;
-                foreach (var t in arr)
-                {
-                    var refId = t.Value<long?>("INTERNAL_REFERENCE") ?? 0;
-                    var qty   = t.Value<decimal?>("ONHAND");
-                    if (refId > 0 && qty.HasValue) { map[refId] = qty.Value; found = true; }
-                }
-
-                offset += arr.Count;
-                if (!found && offset > 100) break;   // ONHAND hic gelmiyorsa vazgec
-                if (arr.Count < 25) break;
-                if (offset > 20000) break;
-            }
-
-            if (map.Count > 0)
-            {
-                logger.LogInformation("Stok items/ONHAND ile alindi: {Count}", map.Count);
-                return map;
+                logger.LogDebug(ex, "Stok sorgusu basarisiz, sonraki deneniyor");
             }
         }
-        catch (Exception ex) { logger.LogDebug(ex, "items/ONHAND denemesi basarisiz"); }
 
-        logger.LogWarning(
-            "Stok bilgisi alinamadi. Denenen: queries(GET), queries(POST), items?fields=ONHAND");
+        logger.LogWarning("Stok bilgisi alinamadi (queries/unsafe).");
         return map;
     }
 
@@ -269,8 +214,7 @@ public sealed class LogoProductService(
 
         foreach (var row in arr)
         {
-            var refId = row.Value<long?>("STOCKREF")
-                     ?? row.Value<long?>("ITEMREF") ?? 0;
+            var refId = row.Value<long?>("STOCKREF") ?? row.Value<long?>("ITEMREF") ?? 0;
             if (refId == 0) continue;
             map[refId] = row.Value<decimal?>("ONHAND") ?? 0;
         }

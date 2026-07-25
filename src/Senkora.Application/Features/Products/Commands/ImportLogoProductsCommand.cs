@@ -86,8 +86,8 @@ public sealed class ImportLogoProductsCommandHandler(
         }
 
         // Mevcut kayitlar — silinmisler dahil (unique index onlari da kapsar)
+        // Silme islemi kalici oldugu icin normal sorgu yeterli
         var existing = await db.ProductMappings
-            .IgnoreQueryFilters()
             .Where(p => p.TenantId == request.TenantId && p.WooStoreId == request.WooStoreId)
             .Select(p => p.LogoItemRef)
             .ToListAsync(ct);

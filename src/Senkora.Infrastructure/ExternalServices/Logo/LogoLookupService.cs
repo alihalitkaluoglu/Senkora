@@ -114,8 +114,8 @@ public sealed class LogoLookupService(
         {
             try
             {
-                var url  = $"{restUrl.TrimEnd('/')}/api/v1/queries?tsql={Uri.EscapeDataString(sql)}";
-                var json = await client.GetAsync(url, accessToken, ct);
+                // Logo SQL servisi: POST /api/v1/queries/unsafe
+                var json = await client.UnsafeQueryAsync(restUrl, sql, accessToken, 60, ct);
 
                 var arr = Extract(json, out var apiErr);
                 if (apiErr is not null) { errors.Add($"{table}: {Short(apiErr)}"); continue; }
