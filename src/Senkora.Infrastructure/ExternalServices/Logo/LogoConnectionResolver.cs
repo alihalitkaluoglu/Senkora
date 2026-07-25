@@ -16,10 +16,9 @@ public sealed class LogoConnectionResolver(
             c => c.Id == connectionId && c.TenantId == tenantId && c.IsActive, ct)
             ?? throw new InvalidOperationException("Logo baglantisi bulunamadi.");
 
-        // LogoTokenManager tum sifre cozme ve token alma islemini iceride halleder
         var token = await tokenManager.GetTokenAsync(connectionId, ct);
 
         return new LogoConnectionInfo(
-            conn.RestUrl, token.AccessToken, conn.FirmNo, conn.Username);
+            conn.RestUrl, token.AccessToken, conn.FirmNo, conn.Username, conn.PeriodNo);
     }
 }

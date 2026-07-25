@@ -229,7 +229,8 @@ export default function ProductsPage() {
                   {importRes.scanned} kayıt tarandı<br />
                   <strong style={{ color: "#3fb950" }}>{importRes.created} yeni ürün eklendi</strong><br />
                   {importRes.alreadyExists} kayıt zaten mevcuttu<br />
-                  {importRes.pricesMatched} ürüne fiyat kartından fiyat atandı
+                  {importRes.pricesMatched} ürüne fiyat kartından fiyat atandı<br />
+                  {importRes.stockMatched} ürüne stok miktarı atandı
                   {importRes.warning && (
                     <><br /><span style={{ color: "#f0883e" }}>{importRes.warning}</span></>
                   )}

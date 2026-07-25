@@ -21,4 +21,9 @@ public class WooStore : TenantEntity
     // WP Admin → Kullanicilar → Profil → Application Passwords
     public string? WpUsername { get; set; }
     public string? WpAppPasswordEncrypted { get; set; }
+
+    // ── Fiyat secim kriterleri (Logo fiyat kartlariyla eslesme) ─────────────
+    public string? PriceProjectCode      { get; set; }
+    public string? PriceTradingGroupCode { get; set; }
+    public string? PriceCostCenterCode   { get; set; }
 }

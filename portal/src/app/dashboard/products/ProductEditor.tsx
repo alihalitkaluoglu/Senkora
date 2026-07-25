@@ -242,19 +242,43 @@ export default function ProductEditor({ mappingId, wooStoreId, onClose, onSaved 
             {/* IMAGES */}
             {tab === "images" && (<>
               <div style={{ fontSize: 12, color: "#6e7681", marginBottom: 12 }}>
-                İlk görsel öne çıkan görsel olur. Yıldıza basarak değiştirebilirsiniz.
-                Maks. 10MB · JPG, PNG, WebP
+                Yıldıza (★) basarak kapak resmini seçin — WooCommerce&apos;de ürünün
+                küçük resmi olarak kullanılır. Maks. 10MB · JPG, PNG, WebP
               </div>
               <div className="imgs-grid">
                 {e.images.map((img, i) => (
-                  <div key={i} className="img-card">
+                  <div key={i} className="img-card"
+                    style={{
+                      borderColor: img.isFeatured ? "#f0883e" : "#30363d",
+                      borderWidth: img.isFeatured ? 2 : 1,
+                    }}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={`${API_BASE}/uploads/${img.storedPath}`} alt={img.alt ?? ""} />
-                    <button className="img-star" title="Öne çıkan yap"
+                    <button className="img-star"
+                      title={img.isFeatured ? "Kapak resmi" : "Kapak resmi yap"}
                       onClick={() => setFeatured(i)}
-                      style={{ color: img.isFeatured ? "#f0883e" : "#6e7681" }}>★</button>
+                      style={{
+                        color: img.isFeatured ? "#f0883e" : "#6e7681",
+                        background: img.isFeatured ? "rgba(240,136,62,.25)" : "rgba(0,0,0,.7)",
+                      }}>★</button>
                     <button className="img-del" title="Sil"
                       onClick={() => removeImage(i)}>✕</button>
+                    {img.isFeatured && (
+                      <div style={{
+                        position: "absolute", bottom: 0, left: 0, right: 0,
+                        background: "rgba(240,136,62,.9)", color: "#0d1117",
+                        fontSize: 9.5, fontWeight: 700, textAlign: "center",
+                        padding: "2px 0", letterSpacing: .3,
+                      }}>KAPAK</div>
+                    )}
+                    {img.remoteUrl && (
+                      <div style={{
+                        position: "absolute", top: 4, left: "50%",
+                        transform: "translateX(-50%)",
+                        background: "rgba(35,134,54,.9)", color: "white",
+                        fontSize: 9, borderRadius: 3, padding: "1px 5px",
+                      }}>✓ WP</div>
+                    )}
                   </div>
                 ))}
                 <div className="img-drop" onClick={() => fileRef.current?.click()}>

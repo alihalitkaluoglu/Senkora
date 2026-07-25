@@ -5,6 +5,7 @@ import type {
   ProductMapping, ProductEnrichment, ProductEnrichmentDetail,
   WooCategory, PagedResult, LogoFetchDiagnostics,
   ImportResult, RefreshResult, ProductHistory,
+  LogoLookupResult,
 } from '@/types/api';
 
 const BASE = 'http://localhost:5000';
@@ -59,6 +60,10 @@ export const logoApi = {
     restUrl: string; clientId: string; clientSecret: string;
     username: string; password: string; firmNo: number;
   }) => api.post<ApiResponse<LogoTestResult>>('api/v1/logo/connections/test', d),
+
+  lookups: (connectionId: string) =>
+    api.get<ApiResponse<LogoLookupResult>>(
+      `api/v1/logo/connections/${connectionId}/lookups`),
 };
 
 export const wooApi = {
@@ -67,10 +72,12 @@ export const wooApi = {
   create: (d: {
     name: string; storeUrl: string; consumerKey: string; consumerSecret: string;
     wpUsername?: string; wpAppPassword?: string;
+    priceProjectCode?: string; priceTradingGroupCode?: string; priceCostCenterCode?: string;
   }) => api.post<ApiResponse<string>>('api/v1/woo/stores', d),
   update: (id: string, d: {
     name: string; storeUrl: string; consumerKey?: string; consumerSecret?: string;
     isActive: boolean; wpUsername?: string; wpAppPassword?: string;
+    priceProjectCode?: string; priceTradingGroupCode?: string; priceCostCenterCode?: string;
   }) => api.put<ApiResponse<null>>(`api/v1/woo/stores/${id}`, d),
   delete: (id: string) =>
     api.delete<ApiResponse<null>>(`api/v1/woo/stores/${id}`),
@@ -133,4 +140,10 @@ export const productApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+};
+
+export const diagnosticsApi = {
+  checkSchema: () =>
+    api.get<ApiResponse<{ isHealthy: boolean; issues: string[]; message: string }>>(
+      'api/v1/diagnostics/schema'),
 };

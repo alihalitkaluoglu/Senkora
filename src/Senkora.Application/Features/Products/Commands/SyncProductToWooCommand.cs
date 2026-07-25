@@ -70,8 +70,10 @@ public sealed class SyncProductToWooCommandHandler(
             else
             {
                 // Once one cikan gorsel, sonra sira numarasina gore
+                // WooCommerce ilk gorseli kapak (featured) olarak kullanir.
+                // Kullanicinin sectigi kapak resmi mutlaka ilk sirada olmali.
                 var ordered = enrichment.Images
-                    .OrderBy(i => i.IsFeatured ? 0 : 1)
+                    .OrderByDescending(i => i.IsFeatured)
                     .ThenBy(i => i.SortOrder)
                     .ToList();
 
@@ -206,6 +208,14 @@ public sealed class SyncProductToWooCommandHandler(
         }
     }
 
+    /// <summary>
+    /// WooCommerce fiyati her zaman nokta ayracli olmali (kultur bagimsiz).
+    /// Fiyat 0 ise WooCommerce urunu satin alinamaz sayar ve
+    /// "Sepete Ekle" yerine "Devamini oku" gosterir.
+    /// </summary>
+    private static string FormatPrice(decimal value)
+        => value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+
     private static string GuessContentType(string fileName)
         => Path.GetExtension(fileName).ToLowerInvariant() switch
         {
@@ -228,8 +238,9 @@ public sealed class SyncProductToWooCommandHandler(
             Status           = "publish",
             Description      = e.OverrideDescription ?? m.LogoDescription ?? "",
             ShortDescription = e.OverrideShortDesc   ?? m.LogoAuxDesc     ?? "",
-            RegularPrice     = (e.RegularPriceOverride ?? m.LogoSellPrice).ToString("F2"),
-            SalePrice        = e.SalePriceOverride?.ToString("F2"),
+            RegularPrice     = FormatPrice(e.RegularPriceOverride ?? m.LogoSellPrice),
+            SalePrice        = e.SalePriceOverride.HasValue && e.SalePriceOverride.Value > 0
+                ? FormatPrice(e.SalePriceOverride.Value) : null,
             DateOnSaleFrom   = e.SaleFrom?.ToString("yyyy-MM-ddTHH:mm:ss"),
             DateOnSaleTo     = e.SaleTo?.ToString("yyyy-MM-ddTHH:mm:ss"),
             ManageStock      = e.ManageStock,

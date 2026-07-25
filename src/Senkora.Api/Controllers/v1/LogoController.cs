@@ -89,6 +89,16 @@ public sealed class LogoController(
         var result = await mediator.Send(command, ct);
         return Ok(ApiResponse<LogoConnectionTestResult>.Ok(result.Data!));
     }
+
+    /// <summary>Fiyat kriterleri icin Logo secim listeleri (proje, TIG, masraf merkezi)</summary>
+    [HttpGet("connections/{id:guid}/lookups")]
+    public async Task<IActionResult> GetLookups(Guid id, CancellationToken ct)
+    {
+        var result = await mediator.Send(new GetLogoLookupsQuery(TenantId, id), ct);
+        if (!result.IsSuccess)
+            return BadRequest(ApiResponse<object>.Fail(result.Error!));
+        return Ok(ApiResponse<LogoLookupResult>.Ok(result.Data!));
+    }
 }
 
 // ── Request DTO'lari ─────────────────────────────────────────────────────────

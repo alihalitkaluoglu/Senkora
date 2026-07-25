@@ -4,20 +4,20 @@ using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Senkora.Application.Common.Interfaces;
 using Senkora.Application.Common.Models;
+using Senkora.Application.Common.Services;
 using Senkora.Domain.Entities.Catalog;
 
 namespace Senkora.Application.Features.Products.Commands;
 
 /// <summary>
-/// Veritabanindaki mevcut urunlerin Logo verilerini gunceller.
-/// Zenginlestirme verisine (gorsel, kategori, etiket, ozellik) DOKUNMAZ.
-/// Sadece Logo kaynakli alanlar guncellenir: ad, fiyat, stok, KDV, grup, aciklama.
+/// Mevcut urunlerin Logo verilerini gunceller.
+/// Zenginlestirme verisine (gorsel, kategori, etiket) DOKUNMAZ.
 /// </summary>
 public sealed record RefreshLogoProductsCommand(
     Guid TenantId,
     Guid LogoConnectionId,
     Guid WooStoreId,
-    bool PreviewOnly = false)   // true = sadece degisiklik ozeti, kayit yapmaz
+    bool PreviewOnly = false)   // true = sadece degisiklik ozeti
     : IRequest<Result<RefreshResult>>;
 
 public sealed record RefreshResult(
@@ -29,12 +29,12 @@ public sealed record RefreshResult(
     List<ProductChangePreview> Changes);
 
 public sealed record ProductChangePreview(
-    Guid     MappingId,
-    string   Code,
-    string   Name,
-    string   Field,
-    string?  OldValue,
-    string?  NewValue);
+    Guid    MappingId,
+    string  Code,
+    string  Name,
+    string  Field,
+    string? OldValue,
+    string? NewValue);
 
 public sealed class RefreshLogoProductsCommandHandler(
     IApplicationDbContext db,
@@ -63,16 +63,27 @@ public sealed class RefreshLogoProductsCommandHandler(
             .ToListAsync(ct);
 
         if (mappings.Count == 0)
-            return Result<RefreshResult>.Success(
-                new RefreshResult(0, 0, 0, 0, 0, []));
+            return Result<RefreshResult>.Success(new RefreshResult(0, 0, 0, 0, 0, []));
 
-        // Fiyat kartlarini cek
-        Dictionary<long, LogoItemPriceDto> priceMap;
+        var store = await db.WooStores.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == request.WooStoreId
+                                   && s.TenantId == request.TenantId, ct);
+
+        Dictionary<long, List<LogoItemPriceDto>> priceGroups;
         try
         {
-            priceMap = await logoService.FetchSalesPricesAsync(conn.RestUrl, conn.AccessToken, ct);
+            var prices = await logoService.FetchSalesPricesAsync(conn.RestUrl, conn.AccessToken, ct);
+            priceGroups = prices.GroupBy(p => p.ItemRef).ToDictionary(g => g.Key, g => g.ToList());
         }
-        catch { priceMap = []; }
+        catch { priceGroups = []; }
+
+        Dictionary<long, decimal> stockMap;
+        try
+        {
+            stockMap = await logoService.FetchStockAsync(
+                conn.RestUrl, conn.AccessToken, conn.FirmNo, conn.PeriodNo, ct);
+        }
+        catch { stockMap = []; }
 
         int updated = 0, unchanged = 0, notFound = 0, priced = 0;
         var changes = new List<ProductChangePreview>();
@@ -89,15 +100,27 @@ public sealed class RefreshLogoProductsCommandHandler(
 
             var newPrice = item.SellPrice;
             var newVat   = item.VatRate;
+            var newStock = item.Stock;
 
-            if (priceMap.TryGetValue(m.LogoItemRef, out var p))
+            if (priceGroups.TryGetValue(m.LogoItemRef, out var candidates))
             {
-                if (p.Price > 0) { newPrice = p.Price; priced++; }
-                if (newVat == 0 && p.VatRate > 0) newVat = p.VatRate;
+                var chosen = PriceSelector.Select(
+                    candidates,
+                    store?.PriceProjectCode,
+                    store?.PriceTradingGroupCode,
+                    store?.PriceCostCenterCode);
+
+                if (chosen is not null && chosen.Price > 0)
+                {
+                    newPrice = chosen.Price;
+                    priced++;
+                    if (newVat == 0 && chosen.VatRate > 0) newVat = chosen.VatRate;
+                }
             }
 
-            var diff = new Dictionary<string, (string? Old, string? New)>();
+            if (stockMap.TryGetValue(m.LogoItemRef, out var qty)) newStock = qty;
 
+            var diff = new Dictionary<string, (string? Old, string? New)>();
             void Track(string field, object? oldV, object? newV)
             {
                 var o = oldV?.ToString() ?? "";
@@ -105,13 +128,13 @@ public sealed class RefreshLogoProductsCommandHandler(
                 if (o != n) diff[field] = (o, n);
             }
 
-            Track("Ad",       m.LogoItemName,   item.Name);
-            Track("Fiyat",    m.LogoSellPrice,  newPrice);
-            Track("KDV",      m.LogoVatRate,    newVat);
-            Track("Stok",     m.LogoStock,      item.Stock);
-            Track("Grup",     m.LogoGroupCode,  item.GroupCode);
-            Track("Agirlik",  m.LogoWeight,     item.Weight);
-            Track("Birim",    m.LogoUnitCode,   item.UnitCode);
+            Track("Ad",      m.LogoItemName,  item.Name);
+            Track("Fiyat",   m.LogoSellPrice, newPrice);
+            Track("KDV",     m.LogoVatRate,   newVat);
+            Track("Stok",    m.LogoStock,     newStock);
+            Track("Grup",    m.LogoGroupCode, item.GroupCode);
+            Track("Agirlik", m.LogoWeight,    item.Weight);
+            Track("Birim",   m.LogoUnitCode,  item.UnitCode);
 
             if (diff.Count == 0) { unchanged++; continue; }
 
@@ -121,18 +144,17 @@ public sealed class RefreshLogoProductsCommandHandler(
 
             if (!request.PreviewOnly)
             {
-                // SADECE Logo alanlari guncellenir — EnrichmentJson korunur
-                m.LogoItemName    = item.Name;
+                m.LogoItemName    = Cut(item.Name, 500)!;
                 m.LogoSellPrice   = newPrice;
                 m.LogoSellPrice2  = item.SellPrice2;
                 m.LogoVatRate     = newVat;
-                m.LogoStock       = item.Stock;
-                m.LogoGroupCode   = item.GroupCode;
-                m.LogoSpecode     = item.Specode;
-                m.LogoAuxDesc     = item.AuxDesc;
+                m.LogoStock       = newStock;
+                m.LogoGroupCode   = Cut(item.GroupCode, 100);
+                m.LogoSpecode     = Cut(item.Specode, 100);
+                m.LogoAuxDesc     = Cut(item.AuxDesc, 1000);
                 m.LogoDescription = item.Description;
                 m.LogoWeight      = item.Weight;
-                m.LogoUnitCode    = item.UnitCode;
+                m.LogoUnitCode    = Cut(item.UnitCode, 50);
                 m.LogoMarkRef     = item.MarkRef;
                 m.LogoCardType    = item.CardType;
                 m.LogoLastFetched = DateTime.UtcNow;
@@ -159,16 +181,14 @@ public sealed class RefreshLogoProductsCommandHandler(
             await db.SaveChangesAsync(ct);
 
         logger.LogInformation(
-            "Refresh {Mode}: {Total} urun, {Updated} guncellendi, {Unchanged} degismedi",
-            request.PreviewOnly ? "ONIZLEME" : "UYGULANDI",
-            mappings.Count, updated, unchanged);
+            "Refresh {Mode}: {Total} urun, {Updated} guncellendi",
+            request.PreviewOnly ? "ONIZLEME" : "UYGULANDI", mappings.Count, updated);
 
         return Result<RefreshResult>.Success(new RefreshResult(
-            Total:          mappings.Count,
-            Updated:        updated,
-            Unchanged:      unchanged,
-            NotFoundInLogo: notFound,
-            PricesMatched:  priced,
-            Changes:        changes.Take(200).ToList()));
+            mappings.Count, updated, unchanged, notFound, priced,
+            changes.Take(200).ToList()));
     }
+
+    private static string? Cut(string? v, int max)
+        => v is null ? null : v.Length <= max ? v : v[..max];
 }

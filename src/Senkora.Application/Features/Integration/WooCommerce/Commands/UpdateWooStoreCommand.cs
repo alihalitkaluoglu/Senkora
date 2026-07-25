@@ -14,8 +14,11 @@ public sealed record UpdateWooStoreCommand(
     string? ConsumerKey,
     string? ConsumerSecret,
     bool    IsActive,
-    string? WpUsername    = null,
-    string? WpAppPassword = null) : IRequest<Result>;
+    string? WpUsername            = null,
+    string? WpAppPassword         = null,
+    string? PriceProjectCode      = null,
+    string? PriceTradingGroupCode = null,
+    string? PriceCostCenterCode   = null) : IRequest<Result>;
 
 public sealed class UpdateWooStoreCommandHandler(
     IApplicationDbContext db,
@@ -35,9 +38,9 @@ public sealed class UpdateWooStoreCommandHandler(
         store.IsActive = request.IsActive;
 
         if (!string.IsNullOrWhiteSpace(request.ConsumerKey))
-            store.ConsumerKeyEncrypted = encryption.Encrypt(request.ConsumerKey);
+            store.ConsumerKeyEncrypted = encryption.Encrypt(request.ConsumerKey.Trim());
         if (!string.IsNullOrWhiteSpace(request.ConsumerSecret))
-            store.ConsumerSecretEncrypted = encryption.Encrypt(request.ConsumerSecret);
+            store.ConsumerSecretEncrypted = encryption.Encrypt(request.ConsumerSecret.Trim());
 
         // WordPress medya kimlik bilgileri
         if (request.WpUsername is not null)
@@ -47,10 +50,21 @@ public sealed class UpdateWooStoreCommandHandler(
         if (!string.IsNullOrWhiteSpace(request.WpAppPassword))
             store.WpAppPasswordEncrypted = encryption.Encrypt(request.WpAppPassword.Trim());
 
+        // Fiyat secim kriterleri — bos gonderilirse temizlenir
+        if (request.PriceProjectCode is not null)
+            store.PriceProjectCode = Normalize(request.PriceProjectCode);
+        if (request.PriceTradingGroupCode is not null)
+            store.PriceTradingGroupCode = Normalize(request.PriceTradingGroupCode);
+        if (request.PriceCostCenterCode is not null)
+            store.PriceCostCenterCode = Normalize(request.PriceCostCenterCode);
+
         store.IsVerified     = false;
         store.LastVerifiedAt = null;
 
         await db.SaveChangesAsync(ct);
         return Result.Success();
     }
+
+    private static string? Normalize(string value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

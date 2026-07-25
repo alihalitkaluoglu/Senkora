@@ -35,6 +35,9 @@ public sealed class CreateWooStoreCommandHandler(
             IsActive                = true,
             IsVerified              = false,
             WpUsername              = request.WpUsername,
+            PriceProjectCode        = Norm(request.PriceProjectCode),
+            PriceTradingGroupCode   = Norm(request.PriceTradingGroupCode),
+            PriceCostCenterCode     = Norm(request.PriceCostCenterCode),
             WpAppPasswordEncrypted  = string.IsNullOrWhiteSpace(request.WpAppPassword)
                 ? null : encryption.Encrypt(request.WpAppPassword),
             CreatedBy               = request.TenantId.ToString()
@@ -48,4 +51,7 @@ public sealed class CreateWooStoreCommandHandler(
 
         return Result<Guid>.Success(store.Id);
     }
+
+    private static string? Norm(string? v)
+        => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
 }

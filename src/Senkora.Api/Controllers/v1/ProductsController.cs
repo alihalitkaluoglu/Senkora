@@ -82,6 +82,20 @@ public sealed class ProductsController(
         return Ok(ApiResponse<RefreshResult>.Ok(result.Data!));
     }
 
+    /// <summary>Secilen urun eslemelerini siler</summary>
+    [HttpPost("delete")]
+    [Authorize(Policy = "SyncManager")]
+    public async Task<IActionResult> DeleteProducts(
+        [FromBody] DeleteProductsRequest request, CancellationToken ct)
+    {
+        var cmd = new DeleteProductsCommand(
+            TenantId, request.Ids ?? [], request.DeleteAll, request.StatusFilter);
+        var result = await mediator.Send(cmd, ct);
+        if (!result.IsSuccess)
+            return BadRequest(ApiResponse<object>.Fail(result.Error!));
+        return Ok(ApiResponse<int>.Ok(result.Data, $"{result.Data} urun silindi."));
+    }
+
     /// <summary>Urun aktarim ve degisiklik gecmisi</summary>
     [HttpGet("{id:guid}/history")]
     public async Task<IActionResult> GetHistory(Guid id, CancellationToken ct)
@@ -171,6 +185,11 @@ public sealed record ProductImportRequest(
     Guid LogoConnectionId,
     Guid WooStoreId,
     int  MaxItems = 0);   // 0 = tum katalog
+
+public sealed record DeleteProductsRequest(
+    List<Guid>? Ids          = null,
+    bool        DeleteAll    = false,
+    string?     StatusFilter = null);
 
 public sealed record ProductRefreshRequest(
     Guid LogoConnectionId,

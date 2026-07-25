@@ -53,6 +53,9 @@ export interface WooStore {
   lastSyncAt: string | null;
   wpUsername: string | null;
   hasWpCredentials: boolean;
+  priceProjectCode: string | null;
+  priceTradingGroupCode: string | null;
+  priceCostCenterCode: string | null;
 }
 
 export interface LogoTestResult {
@@ -214,6 +217,7 @@ export interface ImportResult {
   created: number;
   alreadyExists: number;
   pricesMatched: number;
+  stockMatched: number;
   completed: boolean;
   warning: string | null;
 }
@@ -246,4 +250,21 @@ export interface ProductHistory {
   durationMs: number;
   performedBy: string | null;
   createdAt: string;
+}
+
+export interface LogoLookupItem {
+  code: string;
+  name: string;
+}
+
+export interface LogoLookupSet {
+  items: LogoLookupItem[];
+  source: string | null;
+  error: string | null;
+}
+
+export interface LogoLookupResult {
+  projects: LogoLookupSet;
+  tradingGroups: LogoLookupSet;
+  costCenters: LogoLookupSet;
 }

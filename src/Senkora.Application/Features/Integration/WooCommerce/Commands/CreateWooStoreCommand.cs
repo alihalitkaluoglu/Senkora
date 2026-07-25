@@ -10,5 +10,8 @@ public sealed record CreateWooStoreCommand(
     string ConsumerKey,
     string  ConsumerSecret,
     string? WpUsername    = null,
-    string? WpAppPassword = null)
+    string? WpAppPassword         = null,
+    string? PriceProjectCode      = null,
+    string? PriceTradingGroupCode = null,
+    string? PriceCostCenterCode   = null)
     : IRequest<Result<Guid>>;

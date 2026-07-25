@@ -18,6 +18,9 @@ public class WooStoreConfiguration : IEntityTypeConfiguration<WooStore>
         b.Property(x => x.ApiVersion).HasMaxLength(20).HasDefaultValue("wc/v3");
         b.Property(x => x.WpUsername).HasMaxLength(200);
         b.Property(x => x.WpAppPasswordEncrypted).HasMaxLength(2000);
+        b.Property(x => x.PriceProjectCode).HasMaxLength(100);
+        b.Property(x => x.PriceTradingGroupCode).HasMaxLength(100);
+        b.Property(x => x.PriceCostCenterCode).HasMaxLength(100);
         b.HasIndex(x => new { x.TenantId, x.StoreUrl });
         b.HasIndex(x => x.IsDeleted);
     }

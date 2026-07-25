@@ -1,9 +1,5 @@
 namespace Senkora.Application.Common.Interfaces;
 
-/// <summary>
-/// Logo baglantisi icin token ve URL bilgisini cozumler.
-/// Sifre cozme ve token alma islemlerini kapsullar.
-/// </summary>
 public interface ILogoConnectionResolver
 {
     Task<LogoConnectionInfo> ResolveAsync(
@@ -14,4 +10,5 @@ public sealed record LogoConnectionInfo(
     string RestUrl,
     string AccessToken,
     int    FirmNo,
-    string Username);
+    string Username,
+    int    PeriodNo = 1);

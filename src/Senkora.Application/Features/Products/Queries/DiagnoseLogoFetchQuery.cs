@@ -22,7 +22,13 @@ public sealed record LogoFetchDiagnostics(
     int     ParsedItemCount,
     string? FirstItemJson,
     string? ErrorMessage,
-    string? ErrorStage);
+    string? ErrorStage,
+    // Fiyat karti tanisi
+    string? PriceRequestUrl    = null,
+    bool    PriceRequestOk     = false,
+    int     PriceRecordCount   = 0,
+    string? FirstPriceJson     = null,
+    string? PriceErrorMessage  = null);
 
 public sealed class DiagnoseLogoFetchQueryHandler(
     ILogoConnectionResolver resolver,

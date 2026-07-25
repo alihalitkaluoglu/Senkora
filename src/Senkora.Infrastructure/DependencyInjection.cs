@@ -89,6 +89,7 @@ public static class DependencyInjection
         services.AddScoped<ILogoTokenManager,        LogoTokenManager>();
         services.AddScoped<ILogoRestService,         LogoRestService>();
         services.AddScoped<ILogoProductService,      LogoProductService>();
+        services.AddScoped<ILogoLookupService,       LogoLookupService>();
         services.AddScoped<ILogoConnectionResolver,  LogoConnectionResolver>();
         services.AddScoped<ILogoDiagnosticsService, LogoDiagnosticsService>();
 

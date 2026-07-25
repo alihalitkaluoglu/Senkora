@@ -5,43 +5,40 @@ using Senkora.Application.Common.Interfaces;
 namespace Senkora.Infrastructure.ExternalServices.Logo;
 
 /// <summary>
-/// Logo REST malzeme karti ve fiyat karti entegrasyonu.
-///
-/// Alan isimleri (Logo REST v1 yanitindan dogrulandi):
-///   items          → INTERNAL_REFERENCE, CODE, NAME, CARD_TYPE, VAT, GROUP_CODE
-///   salesItemPrices → ITEMREF/INTERNAL_REFERENCE, CODE, PRICE, CURRENCY, PRICELISTREF
+/// Logo REST malzeme, stok ve fiyat entegrasyonu.
+/// Logo surumune gore desteklenen parametreler degistigi icin
+/// kademeli deneme (fields+q → q → sade) uygulanir.
 /// </summary>
 public sealed class LogoProductService(
     LogoRestClient client,
     ILogger<LogoProductService> logger) : ILogoProductService
 {
-    /// <summary>20=Malzeme Sinifi, 22=Sistem kaydi → urun degil</summary>
-    private static readonly int[] ExcludedCardTypes = [20, 22];
+    private static readonly int[] AllowedCardTypes = [1, 12];
+    private const int LogoMaxPageSize = 25;
 
-    private const int PageSize = 25;
+    private enum QueryMode { FieldsAndFilter, FilterOnly, Plain }
+    private QueryMode? _mode;
+
+    private const string ItemFields =
+        "INTERNAL_REFERENCE,CODE,NAME,CARD_TYPE,RECORD_STATUS,VAT,GROUP_CODE," +
+        "SPECIAL_CODE,UNIT_CODE,AUXIL_CODE,MARKREF,UNITWEIGHT";
+
+    private static string CardTypeFilter =>
+        string.Join(" or ", AllowedCardTypes.Select(t => $"CARD_TYPE eq {t}"));
 
     public async Task<int> GetItemCountAsync(
         string restUrl, string accessToken, CancellationToken ct = default)
     {
         try
         {
-            // Logo liste yanitinda "count" alani sayfadaki kayit sayisini verir,
-            // toplam icin buyuk bir limit ile son sayfaya bakmak gerekir.
-            // Pratik yaklasim: limit=1 ile Meta bilgisini oku.
-            var url  = $"{restUrl.TrimEnd('/')}/api/v1/items?offset=0&limit=1";
+            var url  = $"{restUrl.TrimEnd('/')}/api/v1/items?limit=1&withCount=true";
             var json = await client.GetAsync(url, accessToken, ct);
             var obj  = JObject.Parse(json);
-
-            // Logo bazi surumlerde totalCount dondurur
-            var total = obj.Value<int?>("totalCount")
-                     ?? obj.Value<int?>("total")
-                     ?? 0;
-
-            return total;
+            return obj.Value<int?>("totalCount") ?? obj.Value<int?>("total") ?? 0;
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Logo item count alinamadi");
+            logger.LogWarning(ex, "Logo toplam kayit sayisi alinamadi");
             return 0;
         }
     }
@@ -51,61 +48,98 @@ public sealed class LogoProductService(
         int firmNo, int offset = 0, int limit = 100,
         CancellationToken ct = default)
     {
-        var result  = new List<LogoItemDto>();
-        var scanned = 0;
-        var current = offset;
+        var result   = new List<LogoItemDto>();
+        var current  = offset;
+        var received = 0;
 
-        while (scanned < limit)
+        while (received < limit)
         {
             ct.ThrowIfCancellationRequested();
+            var take = Math.Min(LogoMaxPageSize, limit - received);
 
-            var take = Math.Min(PageSize, limit - scanned);
-            var url  = $"{restUrl.TrimEnd('/')}/api/v1/items?offset={current}&limit={take}";
+            var (ok, rawCount, items) =
+                await FetchPageAsync(restUrl, accessToken, current, take, ct);
 
-            string raw;
-            try
-            {
-                raw = await client.GetAsync(url, accessToken, ct);
-            }
-            catch (Exception ex)
-            {
-                if (result.Count == 0 && scanned == 0)
-                    throw new InvalidOperationException(
-                        $"Logo REST'ten veri alinamadi: {ex.Message}", ex);
+            if (!ok) break;
 
-                logger.LogWarning(ex,
-                    "Logo sayfa offset={Offset} alinamadi, {Count} kayitla devam", current, result.Count);
-                break;
-            }
-
-            if (string.IsNullOrWhiteSpace(raw)) break;
-
-            var (items, rawCount) = ParsePage(raw, logger);
             result.AddRange(items);
+            received += rawCount;
+            current  += rawCount;
 
-            scanned += rawCount;
-            current += rawCount;
-
-            if (rawCount < take) break;   // liste bitti
-            if (rawCount == 0) break;     // sonsuz dongu koruması
+            if (rawCount < take || rawCount == 0) break;
         }
 
         logger.LogInformation(
-            "Logo items: {Valid} gecerli / {Scanned} taranan (offset={Offset})",
-            result.Count, scanned, offset);
-
+            "Logo items: {Valid} gecerli (offset={Offset}, mod={Mode})",
+            result.Count, offset, _mode);
         return result;
     }
 
+    private async Task<(bool Ok, int RawCount, List<LogoItemDto> Items)> FetchPageAsync(
+        string restUrl, string accessToken, int offset, int take, CancellationToken ct)
+    {
+        var modes = _mode.HasValue
+            ? new[] { _mode.Value }
+            : [QueryMode.FieldsAndFilter, QueryMode.FilterOnly, QueryMode.Plain];
+
+        Exception? lastError = null;
+
+        foreach (var mode in modes)
+        {
+            var url = BuildUrl(restUrl, offset, take, mode);
+            try
+            {
+                var raw = await client.GetAsync(url, accessToken, ct);
+                if (string.IsNullOrWhiteSpace(raw)) return (false, 0, []);
+
+                var arr = ExtractArray(raw, out var apiError);
+                if (apiError is not null) throw new InvalidOperationException(apiError);
+
+                var items = new List<LogoItemDto>();
+                foreach (var t in arr)
+                {
+                    var item = ParseItem(t, logger);
+                    if (item is not null) items.Add(item);
+                }
+
+                if (_mode != mode)
+                {
+                    _mode = mode;
+                    logger.LogInformation("Logo sorgu bicimi: {Mode}", mode);
+                }
+                return (true, arr.Count, items);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                logger.LogWarning("Logo {Mode} basarisiz: {Msg}", mode, ex.Message);
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Logo REST'ten veri alinamadi. Son hata: {lastError?.Message}", lastError);
+    }
+
+    private static string BuildUrl(string restUrl, int offset, int take, QueryMode mode)
+    {
+        var b = $"{restUrl.TrimEnd('/')}/api/v1/items?offset={offset}&limit={take}";
+        return mode switch
+        {
+            QueryMode.FieldsAndFilter =>
+                b + $"&fields={Uri.EscapeDataString(ItemFields)}&q={Uri.EscapeDataString(CardTypeFilter)}",
+            QueryMode.FilterOnly => b + $"&q={Uri.EscapeDataString(CardTypeFilter)}",
+            _ => b,
+        };
+    }
+
     public async Task<LogoItemDto?> FetchItemByRefAsync(
-        string restUrl, string accessToken,
-        long itemRef, CancellationToken ct = default)
+        string restUrl, string accessToken, long itemRef, CancellationToken ct = default)
     {
         try
         {
             var url  = $"{restUrl.TrimEnd('/')}/api/v1/items/{itemRef}";
             var json = await client.GetAsync(url, accessToken, ct);
-            return ParseItem(JObject.Parse(json), logger);
+            return ParseItem(JObject.Parse(json), logger, skipFilters: true);
         }
         catch (Exception ex)
         {
@@ -114,31 +148,65 @@ public sealed class LogoProductService(
         }
     }
 
-    // ── Satis fiyat kartlari ──────────────────────────────────────────────────
-    public async Task<Dictionary<long, LogoItemPriceDto>> FetchSalesPricesAsync(
+    public async Task<Dictionary<long, decimal>> FetchStockAsync(
+        string restUrl, string accessToken,
+        int firmNo, int periodNo, CancellationToken ct = default)
+    {
+        var map    = new Dictionary<long, decimal>();
+        var firm   = firmNo.ToString("D3");
+        var period = periodNo.ToString("D2");
+
+        var queries = new[]
+        {
+            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND FROM LV_{firm}_{period}_STINVTOT " +
+            $"WHERE INVENNO = -1 GROUP BY STOCKREF",
+            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND FROM LV_{firm}_{period}_STINVTOT " +
+            $"GROUP BY STOCKREF",
+        };
+
+        foreach (var sql in queries)
+        {
+            try
+            {
+                var url  = $"{restUrl.TrimEnd('/')}/api/v1/queries?tsql={Uri.EscapeDataString(sql)}";
+                var json = await client.GetAsync(url, accessToken, ct);
+                var arr  = ExtractArray(json, out var apiError);
+                if (apiError is not null || arr.Count == 0) continue;
+
+                foreach (var row in arr)
+                {
+                    var refId = row.Value<long?>("STOCKREF") ?? 0;
+                    if (refId == 0) continue;
+                    map[refId] = row.Value<decimal?>("ONHAND") ?? 0;
+                }
+
+                logger.LogInformation("Logo stok: {Count} malzeme", map.Count);
+                return map;
+            }
+            catch (Exception ex) { logger.LogDebug(ex, "Stok sorgusu basarisiz"); }
+        }
+
+        logger.LogWarning("Stok alinamadi — Logo REST SQL yetkisi kapali olabilir.");
+        return map;
+    }
+
+    public async Task<List<LogoItemPriceDto>> FetchSalesPricesAsync(
         string restUrl, string accessToken, CancellationToken ct = default)
     {
-        var map     = new Dictionary<long, LogoItemPriceDto>();
-        var offset  = 0;
-        const int take = 100;   // fiyat kartlari hafif, daha buyuk sayfa alinabilir
+        var list   = new List<LogoItemPriceDto>();
+        var offset = 0;
+        const int take = 25;
 
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-
-            var url = $"{restUrl.TrimEnd('/')}/api/v1/salesItemPrices" +
-                      $"?offset={offset}&limit={take}";
+            var url = $"{restUrl.TrimEnd('/')}/api/v1/salesItemPrices?offset={offset}&limit={take}";
 
             string raw;
-            try
-            {
-                raw = await client.GetAsync(url, accessToken, ct);
-            }
+            try { raw = await client.GetAsync(url, accessToken, ct); }
             catch (Exception ex)
             {
-                logger.LogWarning(ex,
-                    "Logo satis fiyat kartlari alinamadi (offset={Offset}). " +
-                    "Fiyatlar bos gelecek.", offset);
+                logger.LogWarning(ex, "Fiyat kartlari alinamadi (offset={Offset})", offset);
                 break;
             }
 
@@ -147,140 +215,98 @@ public sealed class LogoProductService(
             JArray arr;
             try
             {
-                var trimmed = raw.TrimStart();
-                if (trimmed.StartsWith('['))
-                    arr = JArray.Parse(raw);
-                else
+                arr = ExtractArray(raw, out var apiError);
+                if (apiError is not null)
                 {
-                    var obj = JObject.Parse(raw);
-                    if (obj["Message"] != null)
-                    {
-                        logger.LogWarning("Logo fiyat karti hatasi: {Msg}", obj["Message"]);
-                        break;
-                    }
-                    arr = obj["items"] as JArray ?? obj["Items"] as JArray ?? [];
+                    logger.LogWarning("Fiyat karti hatasi: {Msg}", apiError);
+                    break;
                 }
             }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Logo fiyat karti yaniti ayristirilamadi");
-                break;
-            }
+            catch { break; }
 
             if (arr.Count == 0) break;
 
             foreach (var t in arr)
             {
-                var price = ParsePrice(t);
-                if (price is null) continue;
-
-                // Ayni malzeme icin birden fazla fiyat karti olabilir.
-                // En guncel/gecerli olani tut: tarih araligi uygun ve en yuksek liste no.
-                if (map.TryGetValue(price.ItemRef, out var existing))
-                {
-                    if (IsBetterPrice(price, existing))
-                        map[price.ItemRef] = price;
-                }
-                else
-                {
-                    map[price.ItemRef] = price;
-                }
+                var p = ParsePrice(t);
+                if (p is not null && p.ItemRef > 0) list.Add(p);
             }
 
             offset += arr.Count;
             if (arr.Count < take) break;
         }
 
-        logger.LogInformation("Logo satis fiyat kartlari: {Count} malzeme icin fiyat bulundu", map.Count);
-        return map;
-    }
-
-    private static bool IsBetterPrice(LogoItemPriceDto candidate, LogoItemPriceDto current)
-    {
-        var now = DateTime.UtcNow.Date;
-
-        bool CandidateValid() =>
-            (candidate.BeginDate is null || candidate.BeginDate <= now) &&
-            (candidate.EndDate   is null || candidate.EndDate   >= now);
-        bool CurrentValid() =>
-            (current.BeginDate is null || current.BeginDate <= now) &&
-            (current.EndDate   is null || current.EndDate   >= now);
-
-        // Gecerli tarih araligindaki fiyat tercih edilir
-        if (CandidateValid() && !CurrentValid()) return true;
-        if (!CandidateValid() && CurrentValid()) return false;
-
-        // Ikisi de gecerliyse fiyati 0 olmayan tercih edilir
-        if (candidate.Price > 0 && current.Price == 0) return true;
-        if (candidate.Price == 0 && current.Price > 0) return false;
-
-        // Son olarak daha yuksek liste referansi (genelde daha yeni tanim)
-        return candidate.PriceListRef > current.PriceListRef;
+        logger.LogInformation("Logo fiyat kartlari: {Count} kayit", list.Count);
+        return list;
     }
 
     private static LogoItemPriceDto? ParsePrice(JToken t)
     {
         try
         {
-            var itemRef = t.Value<long?>("ITEMREF")
+            var itemRef = t.Value<long?>("CARDREF")
+                       ?? t.Value<long?>("CARD_REFERENCE")
+                       ?? t.Value<long?>("ITEMREF")
                        ?? t.Value<long?>("ITEM_REFERENCE")
-                       ?? t.Value<long?>("CARDREF")
-                       ?? 0;
+                       ?? t.Value<long?>("MASTER_REFERENCE") ?? 0;
             if (itemRef == 0) return null;
 
-            var price = t.Value<decimal?>("PRICE")
-                     ?? t.Value<decimal?>("UNIT_PRICE")
-                     ?? 0;
-
-            DateTime? Parse(string key)
+            DateTime? D(params string[] keys)
             {
-                var v = t.Value<DateTime?>(key);
-                // Logo bos tarihi 1899-12-30 olarak dondurur
-                return v is null || v.Value.Year < 1950 ? null : v;
+                foreach (var k in keys)
+                {
+                    var v = t.Value<DateTime?>(k);
+                    if (v is not null && v.Value.Year >= 1950) return v;
+                }
+                return null;
+            }
+
+            string? S(params string[] keys)
+            {
+                foreach (var k in keys)
+                {
+                    var v = t.Value<string>(k);
+                    if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
+                }
+                return null;
             }
 
             return new LogoItemPriceDto(
-                ItemRef:      itemRef,
-                ItemCode:     (t.Value<string>("CODE") ?? "").Trim(),
-                Price:        price,
-                VatRate:      t.Value<decimal?>("VAT") ?? t.Value<decimal?>("VAT_RATE") ?? 0,
-                CurrencyCode: t.Value<string>("CURRENCY") ?? t.Value<string>("CURR_CODE"),
-                PriceListRef: t.Value<int?>("PRICELISTREF")
-                           ?? t.Value<int?>("INTERNAL_REFERENCE") ?? 0,
-                BeginDate:    Parse("BEGDATE") ?? Parse("BEGIN_DATE"),
-                EndDate:      Parse("ENDDATE") ?? Parse("END_DATE"));
+                ItemRef:          itemRef,
+                ItemCode:         (t.Value<string>("CODE") ?? "").Trim(),
+                Price:            t.Value<decimal?>("PRICE") ?? t.Value<decimal?>("UNIT_PRICE") ?? 0,
+                VatRate:          t.Value<decimal?>("VAT") ?? 0,
+                CurrencyCode:     S("CURRENCY", "CURR_CODE"),
+                PriceListRef:     t.Value<int?>("PRIORITY") ?? t.Value<int?>("INTERNAL_REFERENCE") ?? 0,
+                BeginDate:        D("BEGDATE", "BEGIN_DATE", "BEGINNING_DATE"),
+                EndDate:          D("ENDDATE", "END_DATE", "ENDING_DATE"),
+                ProjectCode:      S("PROJECT_CODE", "PROJECTCODE", "PRJCODE"),
+                TradingGroupCode: S("TRADING_GROUP", "TRADINGGRP", "TRADING_GROUP_CODE", "TRGRPCODE"),
+                CostCenterCode:   S("COST_CENTER", "OHPCODE", "COSTCENTER_CODE", "CCENTERCODE"));
         }
         catch { return null; }
     }
 
-    // ── Ayristirma ────────────────────────────────────────────────────────────
-    private static (List<LogoItemDto> Items, int RawCount) ParsePage(string raw, ILogger logger)
+    private static JArray ExtractArray(string raw, out string? apiError)
     {
-        JArray arr;
+        apiError = null;
+        if (string.IsNullOrWhiteSpace(raw)) return [];
         var trimmed = raw.TrimStart();
+        if (trimmed.StartsWith('[')) return JArray.Parse(raw);
 
-        if (trimmed.StartsWith('['))
+        var obj = JObject.Parse(raw);
+        if (obj["Message"] != null)
         {
-            arr = JArray.Parse(raw);
+            var msg   = obj["Message"]!.ToString();
+            var state = obj["ModelState"]?.ToString();
+            apiError  = state is null ? msg : $"{msg} {state}";
+            return [];
         }
-        else
-        {
-            var obj = JObject.Parse(raw);
-            if (obj["Message"] != null)
-                throw new InvalidOperationException($"Logo REST hatasi: {obj["Message"]}");
-            arr = obj["items"] as JArray ?? obj["Items"] as JArray ?? [];
-        }
-
-        var list = new List<LogoItemDto>();
-        foreach (var t in arr)
-        {
-            var item = ParseItem(t, logger);
-            if (item is not null) list.Add(item);
-        }
-        return (list, arr.Count);
+        return obj["items"] as JArray ?? obj["Items"] as JArray
+            ?? obj["value"] as JArray ?? obj["data"] as JArray ?? [];
     }
 
-    private static LogoItemDto? ParseItem(JToken t, ILogger logger)
+    private static LogoItemDto? ParseItem(JToken t, ILogger logger, bool skipFilters = false)
     {
         try
         {
@@ -288,32 +314,36 @@ public sealed class LogoProductService(
                          ?? t.Value<long?>("LOGICALREF") ?? 0;
             if (reference == 0) return null;
 
-            var cardType = t.Value<int?>("CARD_TYPE")
-                        ?? t.Value<int?>("CARDTYPE") ?? 1;
-            if (ExcludedCardTypes.Contains(cardType)) return null;
+            var cardType = t.Value<int?>("CARD_TYPE") ?? t.Value<int?>("CARDTYPE") ?? 0;
+
+            if (!skipFilters)
+            {
+                if (!AllowedCardTypes.Contains(cardType)) return null;
+                var active = t.Value<int?>("ACTIVE") ?? t.Value<int?>("RECORD_STATUS") ?? 0;
+                if (active != 0) return null;
+            }
 
             var code = (t.Value<string>("CODE") ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(code) || code.Length < 2) return null;
+            if (string.IsNullOrWhiteSpace(code)) return null;
 
-            var name = (t.Value<string>("NAME")
-                     ?? t.Value<string>("DESCRIPTION") ?? "").Trim();
+            var name = (t.Value<string>("NAME") ?? t.Value<string>("DESCRIPTION") ?? "").Trim();
 
             return new LogoItemDto(
                 LogicalRef:  reference,
                 Code:        code,
                 Name:        string.IsNullOrWhiteSpace(name) ? code : name,
-                AuxDesc:     t.Value<string>("AUXIL_CODE")   ?? t.Value<string>("AUXDESC"),
-                Description: t.Value<string>("SPECIAL_DESC") ?? t.Value<string>("DEFINITION_"),
-                GroupCode:   t.Value<string>("GROUP_CODE")   ?? t.Value<string>("STGRPCODE"),
+                AuxDesc:     t.Value<string>("AUXIL_CODE"),
+                Description: t.Value<string>("SPECIAL_DESC"),
+                GroupCode:   t.Value<string>("GROUP_CODE") ?? t.Value<string>("STGRPCODE"),
                 Specode:     t.Value<string>("SPECIAL_CODE") ?? t.Value<string>("SPECODE"),
-                UnitCode:    t.Value<string>("UNIT_CODE")    ?? t.Value<string>("UNITSETCODE"),
-                MarkRef:     t.Value<long?>("MARKREF")       ?? t.Value<long?>("MARK_REFERENCE"),
+                UnitCode:    t.Value<string>("UNIT_CODE") ?? t.Value<string>("UNITSETCODE"),
+                MarkRef:     t.Value<long?>("MARKREF"),
                 CardType:    cardType,
-                SellPrice:   t.Value<decimal?>("SELLPRICE")  ?? 0,
+                SellPrice:   t.Value<decimal?>("SELLPRICE") ?? 0,
                 SellPrice2:  t.Value<decimal?>("SELLPRICE2") ?? 0,
-                VatRate:     t.Value<decimal?>("VAT") ?? t.Value<decimal?>("VAT_RATE") ?? 0,
+                VatRate:     t.Value<decimal?>("VAT") ?? 0,
                 Stock:       t.Value<decimal?>("ONHAND") ?? 0,
-                Weight:      t.Value<decimal?>("UNITWEIGHT") ?? t.Value<decimal?>("WEIGHT") ?? 0);
+                Weight:      t.Value<decimal?>("UNITWEIGHT") ?? 0);
         }
         catch (Exception ex)
         {

@@ -3,29 +3,30 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Senkora.Application.Common.Interfaces;
 using Senkora.Application.Common.Models;
+using Senkora.Application.Common.Services;
 using Senkora.Domain.Entities.Catalog;
 using Senkora.Domain.Enums;
 
 namespace Senkora.Application.Features.Products.Commands;
 
 /// <summary>
-/// Logo'daki TUM malzeme kartlarini tarar, veritabaninda olmayanlari ekler.
-/// Mevcut kayitlara dokunmaz (zenginlestirme verisi korunur).
-/// Buyuk katalog icin otomatik sayfalama yapar.
+/// Logo'daki kullanimda olan TM(1) ve MM(12) malzemelerini tarar,
+/// veritabaninda olmayanlari ekler. Fiyat magaza kriterlerine gore secilir.
 /// </summary>
 public sealed record ImportLogoProductsCommand(
     Guid TenantId,
     Guid LogoConnectionId,
     Guid WooStoreId,
-    int  MaxItems = 0)   // 0 = sinirsiz (tum katalog)
+    int  MaxItems = 0)   // 0 = tum katalog
     : IRequest<Result<ImportResult>>;
 
 public sealed record ImportResult(
-    int  Scanned,
-    int  Created,
-    int  AlreadyExists,
-    int  PricesMatched,
-    bool Completed,
+    int     Scanned,
+    int     Created,
+    int     AlreadyExists,
+    int     PricesMatched,
+    int     StockMatched,
+    bool    Completed,
     string? Warning);
 
 public sealed class ImportLogoProductsCommandHandler(
@@ -35,8 +36,8 @@ public sealed class ImportLogoProductsCommandHandler(
     ILogger<ImportLogoProductsCommandHandler> logger)
     : IRequestHandler<ImportLogoProductsCommand, Result<ImportResult>>
 {
-    private const int BatchSize      = 100;   // her turda Logo'dan istenecek kayit
-    private const int MaxTotalBatches = 200;  // guvenlik siniri (200 x 100 = 20.000)
+    private const int BatchSize  = 200;
+    private const int MaxBatches = 500;
 
     public async Task<Result<ImportResult>> Handle(
         ImportLogoProductsCommand request, CancellationToken ct)
@@ -49,42 +50,59 @@ public sealed class ImportLogoProductsCommandHandler(
         catch (Exception ex)
         {
             return Result<ImportResult>.Failure(
-                $"Logo baglantisi kurulamadi: {ex.Message}", "CONNECTION_FAILED");
+                $"Logo baglantisi kurulamadi: {Unwrap(ex)}", "CONNECTION_FAILED");
         }
 
-        // 1. Fiyat kartlarini bir kez cek (tum urunler icin ortak)
-        Dictionary<long, LogoItemPriceDto> priceMap;
+        var store = await db.WooStores.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == request.WooStoreId
+                                   && s.TenantId == request.TenantId, ct);
+        if (store is null)
+            return Result<ImportResult>.Failure("Magaza bulunamadi.", "STORE_NOT_FOUND");
+
+        // Fiyat kartlari — malzeme bazinda grupla
+        Dictionary<long, List<LogoItemPriceDto>> priceGroups;
         try
         {
-            priceMap = await logoService.FetchSalesPricesAsync(
-                conn.RestUrl, conn.AccessToken, ct);
+            var prices = await logoService.FetchSalesPricesAsync(conn.RestUrl, conn.AccessToken, ct);
+            priceGroups = prices.GroupBy(p => p.ItemRef).ToDictionary(g => g.Key, g => g.ToList());
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Fiyat kartlari alinamadi, fiyatlar bos gelecek");
-            priceMap = [];
+            logger.LogWarning(ex, "Fiyat kartlari alinamadi");
+            priceGroups = [];
         }
 
-        // 2. Mevcut kayitlari yukle
+        // Stok
+        Dictionary<long, decimal> stockMap;
+        try
+        {
+            stockMap = await logoService.FetchStockAsync(
+                conn.RestUrl, conn.AccessToken, conn.FirmNo, conn.PeriodNo, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Stok alinamadi");
+            stockMap = [];
+        }
+
         var existing = await db.ProductMappings
             .Where(p => p.TenantId == request.TenantId && p.WooStoreId == request.WooStoreId)
             .Select(p => p.LogoItemRef)
             .ToListAsync(ct);
         var existingSet = new HashSet<long>(existing);
 
-        int scanned = 0, created = 0, exists = 0, priced = 0;
-        var offset = 0;
-        var batches = 0;
+        int scanned = 0, created = 0, exists = 0, priced = 0, stocked = 0;
+        var offset = 0; var batches = 0;
         var completed = false;
         string? warning = null;
 
-        while (batches < MaxTotalBatches)
+        while (batches < MaxBatches)
         {
             ct.ThrowIfCancellationRequested();
 
             if (request.MaxItems > 0 && scanned >= request.MaxItems)
             {
-                warning = $"{request.MaxItems} kayit siniri asildi, tarama durduruldu.";
+                warning = $"{request.MaxItems} kayit siniri asildi.";
                 break;
             }
 
@@ -101,37 +119,41 @@ public sealed class ImportLogoProductsCommandHandler(
             catch (Exception ex)
             {
                 logger.LogError(ex, "Logo tarama hatasi (offset={Offset})", offset);
-                if (created == 0)
+                if (created == 0 && scanned == 0)
                     return Result<ImportResult>.Failure(
-                        $"Logo'dan urun cekilemedi: {ex.Message}", "FETCH_FAILED");
-
-                warning = $"Tarama offset={offset} noktasinda kesildi: {ex.Message}";
+                        $"Logo'dan urun cekilemedi: {Unwrap(ex)}", "FETCH_FAILED");
+                warning = $"Tarama offset={offset} noktasinda kesildi: {Unwrap(ex)}";
                 break;
             }
 
-            // Logo daha kayit dondurmuyorsa katalog bitti
-            if (items.Count == 0)
-            {
-                // Filtrelenmis kayitlar olabilir, bir batch daha dene
-                var probe = await logoService.FetchItemsAsync(
-                    conn.RestUrl, conn.AccessToken, conn.FirmNo, offset + take, 1, ct);
-                if (probe.Count == 0) { completed = true; break; }
-            }
+            if (items.Count == 0) { completed = true; break; }
 
             foreach (var item in items)
             {
                 scanned++;
-
                 if (existingSet.Contains(item.LogicalRef)) { exists++; continue; }
 
                 var sellPrice = item.SellPrice;
                 var vatRate   = item.VatRate;
 
-                if (priceMap.TryGetValue(item.LogicalRef, out var p))
+                if (priceGroups.TryGetValue(item.LogicalRef, out var candidates))
                 {
-                    if (p.Price > 0) { sellPrice = p.Price; priced++; }
-                    if (vatRate == 0 && p.VatRate > 0) vatRate = p.VatRate;
+                    var chosen = PriceSelector.Select(
+                        candidates,
+                        store.PriceProjectCode,
+                        store.PriceTradingGroupCode,
+                        store.PriceCostCenterCode);
+
+                    if (chosen is not null && chosen.Price > 0)
+                    {
+                        sellPrice = chosen.Price;
+                        priced++;
+                        if (vatRate == 0 && chosen.VatRate > 0) vatRate = chosen.VatRate;
+                    }
                 }
+
+                var stock = item.Stock;
+                if (stockMap.TryGetValue(item.LogicalRef, out var qty)) { stock = qty; stocked++; }
 
                 db.ProductMappings.Add(new ProductMapping
                 {
@@ -139,22 +161,22 @@ public sealed class ImportLogoProductsCommandHandler(
                     WooStoreId       = request.WooStoreId,
                     LogoConnectionId = request.LogoConnectionId,
                     LogoItemRef      = item.LogicalRef,
-                    LogoItemCode     = item.Code,
-                    LogoItemName     = item.Name,
-                    LogoGroupCode    = item.GroupCode,
-                    LogoSpecode      = item.Specode,
-                    LogoAuxDesc      = item.AuxDesc,
+                    LogoItemCode     = Cut(item.Code, 100)!,
+                    LogoItemName     = Cut(item.Name, 500)!,
+                    LogoGroupCode    = Cut(item.GroupCode, 100),
+                    LogoSpecode      = Cut(item.Specode, 100),
+                    LogoAuxDesc      = Cut(item.AuxDesc, 1000),
                     LogoDescription  = item.Description,
                     LogoSellPrice    = sellPrice,
                     LogoSellPrice2   = item.SellPrice2,
                     LogoVatRate      = vatRate,
-                    LogoStock        = item.Stock,
+                    LogoStock        = stock,
                     LogoWeight       = item.Weight,
-                    LogoUnitCode     = item.UnitCode,
+                    LogoUnitCode     = Cut(item.UnitCode, 50),
                     LogoMarkRef      = item.MarkRef,
                     LogoCardType     = item.CardType,
                     LogoLastFetched  = DateTime.UtcNow,
-                    WooSku           = item.Code,
+                    WooSku           = Cut(item.Code, 200),
                     Status           = SyncMappingStatus.Draft,
                     CreatedBy        = request.TenantId.ToString()
                 });
@@ -163,26 +185,46 @@ public sealed class ImportLogoProductsCommandHandler(
                 created++;
             }
 
-            // Her batch sonunda kaydet — uzun islemde bellek sismesin
-            if (created > 0 && created % BatchSize == 0)
+            try
+            {
                 await db.SaveChangesAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                var detail = Unwrap(ex);
+                logger.LogError(ex, "Kayit hatasi (offset={Offset})", offset);
+                return Result<ImportResult>.Failure(
+                    $"Kayitlar veritabanina yazilamadi: {detail}", "DB_SAVE_FAILED");
+            }
 
-            offset += Math.Max(items.Count, take);
+            offset += items.Count;
             batches++;
 
             if (items.Count < take) { completed = true; break; }
         }
 
-        await db.SaveChangesAsync(ct);
+        if (batches >= MaxBatches) warning = "Guvenlik siniri asildi.";
 
-        if (batches >= MaxTotalBatches)
-            warning = "Guvenlik siniri (20.000 kayit) asildi, tarama durduruldu.";
+        if (stockMap.Count == 0)
+            warning = (warning is null ? "" : warning + " ") +
+                "Stok bilgisi alinamadi (Logo REST'te SQL sorgu yetkisi kapali olabilir).";
 
         logger.LogInformation(
-            "Import tamamlandi: {Scanned} tarandi, {Created} yeni, {Exists} mevcut, {Priced} fiyat eslendi",
-            scanned, created, exists, priced);
+            "Import: {Scanned} tarandi, {Created} yeni, {Priced} fiyat, {Stocked} stok",
+            scanned, created, priced, stocked);
 
-        return Result<ImportResult>.Success(
-            new ImportResult(scanned, created, exists, priced, completed, warning));
+        return Result<ImportResult>.Success(new ImportResult(
+            scanned, created, exists, priced, stocked, completed, warning));
+    }
+
+    private static string? Cut(string? v, int max)
+        => v is null ? null : v.Length <= max ? v : v[..max];
+
+    private static string Unwrap(Exception ex)
+    {
+        var cur = ex; var last = ex.Message; var d = 0;
+        while (cur.InnerException is not null && d < 5)
+        { cur = cur.InnerException; last = cur.Message; d++; }
+        return last;
     }
 }
