@@ -1,0 +1,60 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: senkora-sqlserver
+    environment:
+      SA_PASSWORD: "Senkora@Dev2024!"
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+      MSSQL_SA_PASSWORD: "Senkora@Dev2024!"
+    ports:
+      - "1433:1433"
+    volumes:
+      - senkora_sqldata:/var/opt/mssql
+    restart: unless-stopped
+    networks:
+      - senkora-net
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Senkora@Dev2024!" -Q "SELECT 1" -No -C
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: senkora-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - senkora_redis:/data
+    restart: unless-stopped
+    networks:
+      - senkora-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  seq:
+    image: datalust/seq:latest
+    container_name: senkora-seq
+    environment:
+      ACCEPT_EULA: "Y"
+    ports:
+      - "5341:5341"
+      - "8080:80"
+    volumes:
+      - senkora_seq:/data
+    restart: unless-stopped
+    networks:
+      - senkora-net
+
+volumes:
+  senkora_sqldata:
+  senkora_redis:
+  senkora_seq:
+
+networks:
+  senkora-net:
+    driver: bridge

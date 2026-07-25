@@ -1,0 +1,37 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.DotSettings.user
+TestResults/
+*.trx
+.idea/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Node / Next.js
+portal/node_modules/
+portal/.next/
+portal/out/
+portal/.env
+portal/.env.local
+
+# Docker data
+docker/data/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rider / VS Code
+.idea/
+.vscode/launch.json
