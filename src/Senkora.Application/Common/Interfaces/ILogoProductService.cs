@@ -2,27 +2,42 @@ namespace Senkora.Application.Common.Interfaces;
 
 public interface ILogoProductService
 {
-    Task<List<LogoItemDto>> FetchItemsAsync(
+    /// <summary>
+    /// Bir sayfa malzeme ceker. Donen nesne bir sonraki offset'i icerir —
+    /// filtreleme yapildigi icin cagiran taraf items.Count ile offset ilerletmemeli.
+    /// </summary>
+    Task<LogoItemPage> FetchItemsAsync(
         string restUrl, string accessToken,
-        int firmNo, int offset = 0, int limit = 100,
+        int firmNo, int offset, int maxScan,
         CancellationToken ct = default);
 
     Task<LogoItemDto?> FetchItemByRefAsync(
         string restUrl, string accessToken,
         long itemRef, CancellationToken ct = default);
 
-    /// <summary>Stok miktarlari (itemRef -> miktar). SQL sorgusu ile alinir.</summary>
     Task<Dictionary<long, decimal>> FetchStockAsync(
         string restUrl, string accessToken,
         int firmNo, int periodNo, CancellationToken ct = default);
 
-    /// <summary>Tum satis fiyat kartlari. Secim cagiran tarafta PriceSelector ile yapilir.</summary>
     Task<List<LogoItemPriceDto>> FetchSalesPricesAsync(
         string restUrl, string accessToken, CancellationToken ct = default);
 
     Task<int> GetItemCountAsync(
         string restUrl, string accessToken, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Logo'dan alinan bir sayfa.
+///   Items      → filtreden gecen malzemeler (TM/MM, aktif)
+///   RawScanned → Logo'nun dondurdugu ham kayit sayisi
+///   NextOffset → bir sonraki istekte kullanilacak offset
+///   HasMore    → Logo'da daha kayit var mi
+/// </summary>
+public sealed record LogoItemPage(
+    List<LogoItemDto> Items,
+    int               RawScanned,
+    int               NextOffset,
+    bool              HasMore);
 
 public sealed record LogoItemDto(
     long    LogicalRef,
@@ -41,10 +56,6 @@ public sealed record LogoItemDto(
     decimal Stock,
     decimal Weight);
 
-/// <summary>
-/// Logo malzeme satis fiyat karti.
-/// Proje kodu / ticari islem grubu / masraf merkezi fiyat secim kriterleridir.
-/// </summary>
 public sealed record LogoItemPriceDto(
     long      ItemRef,
     string    ItemCode,

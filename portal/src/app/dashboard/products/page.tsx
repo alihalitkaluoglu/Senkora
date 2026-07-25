@@ -30,7 +30,7 @@ export default function ProductsPage() {
 
   // Import
   const [showImport, setShowImport] = useState(false);
-  const [maxItems, setMaxItems]     = useState(0);
+  const [maxScan, setMaxItems]     = useState(0);
   const [importing, setImporting]   = useState(false);
   const [importRes, setImportRes]   = useState<ImportResult | null>(null);
   const [importErr, setImportErr]   = useState("");
@@ -43,6 +43,10 @@ export default function ProductsPage() {
   const [preview, setPreview]         = useState<RefreshResult | null>(null);
   const [refreshRes, setRefreshRes]   = useState<RefreshResult | null>(null);
   const [refreshErr, setRefreshErr]   = useState("");
+
+  const [selected, setSelected]     = useState<Set<string>>(new Set());
+  const [deleting, setDeleting]     = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
 
   const [editId, setEditId]   = useState<string | null>(null);
   const [histId, setHistId]   = useState<{ id: string; code: string } | null>(null);
@@ -89,7 +93,7 @@ export default function ProductsPage() {
     if (!connReady) { setImportErr("Logo bağlantısı ve mağaza seçin."); return; }
     setImporting(true); setImportErr(""); setImportRes(null);
     try {
-      const r = await productApi.importNew({ ...conn, maxItems });
+      const r = await productApi.importNew({ ...conn, maxScan });
       setImportRes(r.data.data!);
       load();
     } catch (e) { setImportErr(apiError(e, "İçe aktarma başarısız.")); }
@@ -124,6 +128,40 @@ export default function ProductsPage() {
       load();
     } catch (e) { setRefreshErr(apiError(e, "Güncelleme başarısız.")); }
     finally { setRefreshing(false); }
+  }
+
+  function toggleOne(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllOnPage() {
+    setSelected(prev => {
+      const allSel = list.length > 0 && list.every(p => prev.has(p.id));
+      const next = new Set(prev);
+      if (allSel) list.forEach(p => next.delete(p.id));
+      else list.forEach(p => next.add(p.id));
+      return next;
+    });
+  }
+
+  async function runDelete(all: boolean) {
+    setDeleting(true);
+    try {
+      const r = await productApi.deleteMany(all
+        ? { deleteAll: true, statusFilter: status || undefined }
+        : { ids: Array.from(selected) });
+      showToast(true, `${r.data.data} ürün silindi.`);
+      setSelected(new Set());
+      setShowDelete(false);
+      setPage(1);
+      load();
+    } catch (e) {
+      showToast(false, apiError(e, "Silme başarısız."));
+    } finally { setDeleting(false); }
   }
 
   async function syncOne(id: string) {
@@ -213,7 +251,7 @@ export default function ProductsPage() {
 
             <div style={{ marginBottom: 14 }}>
               <label className="lbl">Maksimum kayıt (0 = tüm katalog)</label>
-              <input className="inp" type="number" min={0} value={maxItems}
+              <input className="inp" type="number" min={0} value={maxScan}
                 onChange={e => setMaxItems(+e.target.value)} />
               <div style={{ fontSize: 10.5, color: "#6e7681", marginTop: 4 }}>
                 2500 ürün için 3-8 dakika sürebilir. Sayfa açık kalmalı.
@@ -382,6 +420,47 @@ export default function ProductsPage() {
       </div>
     )}
 
+    {showDelete && (
+      <div className="overlay" onClick={e => e.target === e.currentTarget && setShowDelete(false)}>
+        <div className="modal msm">
+          <div className="mhead">
+            <span className="mtitle">Ürünleri Sil</span>
+            <button className="mclose" onClick={() => setShowDelete(false)}>✕</button>
+          </div>
+          <div className="mbody">
+            <div style={{ fontSize: 13, color: "#c9d1d9", lineHeight: 1.6, marginBottom: 18 }}>
+              <strong style={{ color: "#f0883e" }}>{selected.size} ürün</strong> eşlemesi silinecek.<br />
+              <span style={{ fontSize: 11.5, color: "#8b949e" }}>
+                WooCommerce&apos;e gönderilmiş ürünler mağazada kalır, yalnızca Senkora
+                kaydı silinir.
+              </span>
+            </div>
+            <div className="mfooter" style={{ marginTop: 0 }}>
+              <button className="btn btn-ghost" style={{ flex: 1 }}
+                onClick={() => setShowDelete(false)}>Vazgeç</button>
+              <button className="btn btn-danger" style={{ flex: 1 }}
+                disabled={deleting} onClick={() => runDelete(false)}>
+                {deleting ? "Siliniyor..." : `${selected.size} Ürünü Sil`}
+              </button>
+            </div>
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #21262d" }}>
+              <button className="btn btn-ghost btn-sm" style={{ width: "100%" }}
+                disabled={deleting}
+                onClick={() => {
+                  if (confirm(status
+                    ? `"${STATUS_LABELS[status]}" durumundaki TÜM ürünler silinecek. Emin misiniz?`
+                    : "TÜM ürün eşlemeleri silinecek. Emin misiniz?")) runDelete(true);
+                }}>
+                {status
+                  ? `Bunun yerine "${STATUS_LABELS[status]}" durumundaki tümünü sil`
+                  : "Bunun yerine tüm ürünleri sil"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
     {editId && (
       <ProductEditor mappingId={editId} wooStoreId={conn.wooStoreId}
         onClose={() => setEditId(null)}
@@ -404,6 +483,21 @@ export default function ProductsPage() {
         value={search} onChange={e => setSearch(e.target.value)}
         onKeyDown={e => { if (e.key === "Enter") { setPage(1); load(); } }} />
       <button className="btn btn-ghost btn-sm" onClick={() => { setPage(1); load(); }}>Ara</button>
+
+      {selected.size > 0 && (
+        <>
+          <span style={{ fontSize: 12, color: "#f0883e", marginLeft: 4 }}>
+            {selected.size} seçili
+          </span>
+          <button className="btn btn-danger btn-sm" onClick={() => setShowDelete(true)}>
+            Seçilenleri Sil
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setSelected(new Set())}>
+            Temizle
+          </button>
+        </>
+      )}
+
       <div style={{ marginLeft: "auto", fontSize: 12, color: "#6e7681" }}>{total} kayıt</div>
     </div>
 
@@ -418,6 +512,12 @@ export default function ProductsPage() {
         <div className="card" style={{ padding: 0, overflowX: "auto" }}>
           <table className="ptable">
             <thead><tr>
+              <th style={{ width: 32 }}>
+                <input type="checkbox"
+                  style={{ accentColor: "#1d4ed8", cursor: "pointer" }}
+                  checked={list.length > 0 && list.every(p => selected.has(p.id))}
+                  onChange={toggleAllOnPage} />
+              </th>
               <th>Kod</th><th>Ürün Adı</th><th>Grup</th>
               <th style={{ textAlign: "right" }}>Fiyat</th>
               <th style={{ textAlign: "right" }}>Stok</th>
@@ -426,7 +526,14 @@ export default function ProductsPage() {
             </tr></thead>
             <tbody>
               {list.map(p => (
-                <tr key={p.id}>
+                <tr key={p.id}
+                  style={{ background: selected.has(p.id) ? "rgba(37,99,235,.08)" : undefined }}>
+                  <td>
+                    <input type="checkbox"
+                      style={{ accentColor: "#1d4ed8", cursor: "pointer" }}
+                      checked={selected.has(p.id)}
+                      onChange={() => toggleOne(p.id)} />
+                  </td>
                   <td style={{ fontFamily: "monospace", color: "#79c0ff" }}>{p.logoItemCode}</td>
                   <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis",
                     whiteSpace: "nowrap" }} title={p.logoItemName}>{p.logoItemName}</td>

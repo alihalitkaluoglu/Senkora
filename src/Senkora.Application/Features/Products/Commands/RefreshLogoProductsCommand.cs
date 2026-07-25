@@ -121,19 +121,31 @@ public sealed class RefreshLogoProductsCommandHandler(
             if (stockMap.TryGetValue(m.LogoItemRef, out var qty)) newStock = qty;
 
             var diff = new Dictionary<string, (string? Old, string? New)>();
-            void Track(string field, object? oldV, object? newV)
+
+            // Metin alanlari
+            void Track(string field, string? oldV, string? newV)
             {
-                var o = oldV?.ToString() ?? "";
-                var n = newV?.ToString() ?? "";
-                if (o != n) diff[field] = (o, n);
+                var o = (oldV ?? "").Trim();
+                var n = (newV ?? "").Trim();
+                if (!string.Equals(o, n, StringComparison.Ordinal))
+                    diff[field] = (o, n);
+            }
+
+            // Sayisal alanlar — 0.0000 ile 0 ayni sayilir
+            void TrackNum(string field, decimal oldV, decimal newV)
+            {
+                if (decimal.Round(oldV, 4) == decimal.Round(newV, 4)) return;
+                diff[field] = (
+                    oldV.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture),
+                    newV.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture));
             }
 
             Track("Ad",      m.LogoItemName,  item.Name);
-            Track("Fiyat",   m.LogoSellPrice, newPrice);
-            Track("KDV",     m.LogoVatRate,   newVat);
-            Track("Stok",    m.LogoStock,     newStock);
+            TrackNum("Fiyat",   m.LogoSellPrice, newPrice);
+            TrackNum("KDV",     m.LogoVatRate,   newVat);
+            TrackNum("Stok",    m.LogoStock,     newStock);
             Track("Grup",    m.LogoGroupCode, item.GroupCode);
-            Track("Agirlik", m.LogoWeight,    item.Weight);
+            TrackNum("Agirlik", m.LogoWeight,    item.Weight);
             Track("Birim",   m.LogoUnitCode,  item.UnitCode);
 
             if (diff.Count == 0) { unchanged++; continue; }

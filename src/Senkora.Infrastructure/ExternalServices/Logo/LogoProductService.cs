@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
 using Senkora.Application.Common.Interfaces;
@@ -6,14 +7,16 @@ namespace Senkora.Infrastructure.ExternalServices.Logo;
 
 /// <summary>
 /// Logo REST malzeme, stok ve fiyat entegrasyonu.
-/// Logo surumune gore desteklenen parametreler degistigi icin
-/// kademeli deneme (fields+q → q → sade) uygulanir.
+///
+/// Onemli: Logo bir sayfada N kayit dondurur, bunlarin bir kismi filtreden gecer.
+/// Offset her zaman HAM kayit sayisi kadar ilerlemelidir; aksi halde
+/// ayni kayitlar tekrar gelir (duplicate key hatasi).
 /// </summary>
 public sealed class LogoProductService(
     LogoRestClient client,
     ILogger<LogoProductService> logger) : ILogoProductService
 {
-    private static readonly int[] AllowedCardTypes = [1, 12];
+    private static readonly int[] AllowedCardTypes = [1, 12];   // TM, MM
     private const int LogoMaxPageSize = 25;
 
     private enum QueryMode { FieldsAndFilter, FilterOnly, Plain }
@@ -38,44 +41,48 @@ public sealed class LogoProductService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Logo toplam kayit sayisi alinamadi");
+            logger.LogWarning(ex, "Toplam kayit sayisi alinamadi");
             return 0;
         }
     }
 
-    public async Task<List<LogoItemDto>> FetchItemsAsync(
+    // ── Malzeme sayfasi ───────────────────────────────────────────────────────
+    public async Task<LogoItemPage> FetchItemsAsync(
         string restUrl, string accessToken,
-        int firmNo, int offset = 0, int limit = 100,
+        int firmNo, int offset, int maxScan,
         CancellationToken ct = default)
     {
-        var result   = new List<LogoItemDto>();
-        var current  = offset;
-        var received = 0;
+        var items   = new List<LogoItemDto>();
+        var scanned = 0;
+        var current = offset;
+        var hasMore = true;
 
-        while (received < limit)
+        while (scanned < maxScan)
         {
             ct.ThrowIfCancellationRequested();
-            var take = Math.Min(LogoMaxPageSize, limit - received);
 
-            var (ok, rawCount, items) =
-                await FetchPageAsync(restUrl, accessToken, current, take, ct);
+            var take = Math.Min(LogoMaxPageSize, maxScan - scanned);
+            var (rawCount, pageItems) =
+                await FetchOnePageAsync(restUrl, accessToken, current, take, ct);
 
-            if (!ok) break;
+            items.AddRange(pageItems);
 
-            result.AddRange(items);
-            received += rawCount;
-            current  += rawCount;
+            // KRITIK: offset HAM kayit sayisi kadar ilerler
+            scanned += rawCount;
+            current += rawCount;
 
-            if (rawCount < take || rawCount == 0) break;
+            if (rawCount < take) { hasMore = false; break; }
+            if (rawCount == 0)   { hasMore = false; break; }
         }
 
         logger.LogInformation(
-            "Logo items: {Valid} gecerli (offset={Offset}, mod={Mode})",
-            result.Count, offset, _mode);
-        return result;
+            "Logo sayfa: {Valid} gecerli / {Scanned} taranan, offset {From} → {To}",
+            items.Count, scanned, offset, current);
+
+        return new LogoItemPage(items, scanned, current, hasMore);
     }
 
-    private async Task<(bool Ok, int RawCount, List<LogoItemDto> Items)> FetchPageAsync(
+    private async Task<(int RawCount, List<LogoItemDto> Items)> FetchOnePageAsync(
         string restUrl, string accessToken, int offset, int take, CancellationToken ct)
     {
         var modes = _mode.HasValue
@@ -90,16 +97,16 @@ public sealed class LogoProductService(
             try
             {
                 var raw = await client.GetAsync(url, accessToken, ct);
-                if (string.IsNullOrWhiteSpace(raw)) return (false, 0, []);
+                if (string.IsNullOrWhiteSpace(raw)) return (0, []);
 
                 var arr = ExtractArray(raw, out var apiError);
                 if (apiError is not null) throw new InvalidOperationException(apiError);
 
-                var items = new List<LogoItemDto>();
+                var list = new List<LogoItemDto>();
                 foreach (var t in arr)
                 {
                     var item = ParseItem(t, logger);
-                    if (item is not null) items.Add(item);
+                    if (item is not null) list.Add(item);
                 }
 
                 if (_mode != mode)
@@ -107,7 +114,8 @@ public sealed class LogoProductService(
                     _mode = mode;
                     logger.LogInformation("Logo sorgu bicimi: {Mode}", mode);
                 }
-                return (true, arr.Count, items);
+
+                return (arr.Count, list);
             }
             catch (Exception ex)
             {
@@ -117,7 +125,7 @@ public sealed class LogoProductService(
         }
 
         throw new InvalidOperationException(
-            $"Logo REST'ten veri alinamadi. Son hata: {lastError?.Message}", lastError);
+            $"Logo REST'ten veri alinamadi: {lastError?.Message}", lastError);
     }
 
     private static string BuildUrl(string restUrl, int offset, int take, QueryMode mode)
@@ -126,7 +134,8 @@ public sealed class LogoProductService(
         return mode switch
         {
             QueryMode.FieldsAndFilter =>
-                b + $"&fields={Uri.EscapeDataString(ItemFields)}&q={Uri.EscapeDataString(CardTypeFilter)}",
+                b + $"&fields={Uri.EscapeDataString(ItemFields)}" +
+                    $"&q={Uri.EscapeDataString(CardTypeFilter)}",
             QueryMode.FilterOnly => b + $"&q={Uri.EscapeDataString(CardTypeFilter)}",
             _ => b,
         };
@@ -148,48 +157,118 @@ public sealed class LogoProductService(
         }
     }
 
+    // ── STOK ──────────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Logo REST items endpoint'i ONHAND dondurmez.
+    /// Stok icin sirayla su yontemler denenir:
+    ///   1) /api/v1/queries?tsql=...            (GET)
+    ///   2) /api/v1/queries  body: {"tsql":...} (POST)
+    ///   3) /api/v1/items?fields=...,ONHAND     (bazi surumlerde calisir)
+    /// </summary>
     public async Task<Dictionary<long, decimal>> FetchStockAsync(
         string restUrl, string accessToken,
         int firmNo, int periodNo, CancellationToken ct = default)
     {
         var map    = new Dictionary<long, decimal>();
+        var baseUrl= restUrl.TrimEnd('/');
         var firm   = firmNo.ToString("D3");
         var period = periodNo.ToString("D2");
 
-        var queries = new[]
+        var sqls = new[]
         {
             $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND FROM LV_{firm}_{period}_STINVTOT " +
             $"WHERE INVENNO = -1 GROUP BY STOCKREF",
+
             $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND FROM LV_{firm}_{period}_STINVTOT " +
             $"GROUP BY STOCKREF",
         };
 
-        foreach (var sql in queries)
+        // 1) GET ile queries
+        foreach (var sql in sqls)
         {
             try
             {
-                var url  = $"{restUrl.TrimEnd('/')}/api/v1/queries?tsql={Uri.EscapeDataString(sql)}";
+                var url  = $"{baseUrl}/api/v1/queries?tsql={Uri.EscapeDataString(sql)}";
                 var json = await client.GetAsync(url, accessToken, ct);
-                var arr  = ExtractArray(json, out var apiError);
-                if (apiError is not null || arr.Count == 0) continue;
-
-                foreach (var row in arr)
-                {
-                    var refId = row.Value<long?>("STOCKREF") ?? 0;
-                    if (refId == 0) continue;
-                    map[refId] = row.Value<decimal?>("ONHAND") ?? 0;
-                }
-
-                logger.LogInformation("Logo stok: {Count} malzeme", map.Count);
-                return map;
+                if (TryFillStock(json, map)) return map;
             }
-            catch (Exception ex) { logger.LogDebug(ex, "Stok sorgusu basarisiz"); }
+            catch (Exception ex) { logger.LogDebug(ex, "Stok GET sorgusu basarisiz"); }
         }
 
-        logger.LogWarning("Stok alinamadi — Logo REST SQL yetkisi kapali olabilir.");
+        // 2) POST ile queries
+        foreach (var sql in sqls)
+        {
+            try
+            {
+                var url  = $"{baseUrl}/api/v1/queries";
+                var json = await client.PostAsync(url, new { tsql = sql }, accessToken, ct);
+                if (TryFillStock(json, map)) return map;
+            }
+            catch (Exception ex) { logger.LogDebug(ex, "Stok POST sorgusu basarisiz"); }
+        }
+
+        // 3) items uzerinden ONHAND alani
+        try
+        {
+            var offset = 0;
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                var url = $"{baseUrl}/api/v1/items?offset={offset}&limit=25" +
+                          $"&fields={Uri.EscapeDataString("INTERNAL_REFERENCE,ONHAND")}";
+                var json = await client.GetAsync(url, accessToken, ct);
+                var arr  = ExtractArray(json, out var apiErr);
+                if (apiErr is not null || arr.Count == 0) break;
+
+                var found = false;
+                foreach (var t in arr)
+                {
+                    var refId = t.Value<long?>("INTERNAL_REFERENCE") ?? 0;
+                    var qty   = t.Value<decimal?>("ONHAND");
+                    if (refId > 0 && qty.HasValue) { map[refId] = qty.Value; found = true; }
+                }
+
+                offset += arr.Count;
+                if (!found && offset > 100) break;   // ONHAND hic gelmiyorsa vazgec
+                if (arr.Count < 25) break;
+                if (offset > 20000) break;
+            }
+
+            if (map.Count > 0)
+            {
+                logger.LogInformation("Stok items/ONHAND ile alindi: {Count}", map.Count);
+                return map;
+            }
+        }
+        catch (Exception ex) { logger.LogDebug(ex, "items/ONHAND denemesi basarisiz"); }
+
+        logger.LogWarning(
+            "Stok bilgisi alinamadi. Denenen: queries(GET), queries(POST), items?fields=ONHAND");
         return map;
     }
 
+    private bool TryFillStock(string json, Dictionary<long, decimal> map)
+    {
+        var arr = ExtractArray(json, out var apiError);
+        if (apiError is not null || arr.Count == 0) return false;
+
+        foreach (var row in arr)
+        {
+            var refId = row.Value<long?>("STOCKREF")
+                     ?? row.Value<long?>("ITEMREF") ?? 0;
+            if (refId == 0) continue;
+            map[refId] = row.Value<decimal?>("ONHAND") ?? 0;
+        }
+
+        if (map.Count > 0)
+        {
+            logger.LogInformation("Logo stok: {Count} malzeme", map.Count);
+            return true;
+        }
+        return false;
+    }
+
+    // ── Fiyat kartlari ────────────────────────────────────────────────────────
     public async Task<List<LogoItemPriceDto>> FetchSalesPricesAsync(
         string restUrl, string accessToken, CancellationToken ct = default)
     {

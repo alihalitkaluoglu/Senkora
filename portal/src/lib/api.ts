@@ -106,12 +106,15 @@ export const productApi = {
   }) => api.get<ApiResponse<PagedResult<ProductMapping>>>('api/v1/products', { params }),
 
   importNew: (d: {
-    logoConnectionId: string; wooStoreId: string; maxItems?: number;
+    logoConnectionId: string; wooStoreId: string; maxScan?: number;
   }) => api.post<ApiResponse<ImportResult>>('api/v1/products/import', d),
 
   refresh: (d: {
     logoConnectionId: string; wooStoreId: string; previewOnly?: boolean;
   }) => api.post<ApiResponse<RefreshResult>>('api/v1/products/refresh', d),
+
+  deleteMany: (d: { ids?: string[]; deleteAll?: boolean; statusFilter?: string }) =>
+    api.post<ApiResponse<number>>('api/v1/products/delete', d),
 
   history: (id: string) =>
     api.get<ApiResponse<ProductHistory[]>>(`api/v1/products/${id}/history`),

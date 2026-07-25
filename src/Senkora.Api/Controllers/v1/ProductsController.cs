@@ -57,7 +57,7 @@ public sealed class ProductsController(
         [FromBody] ProductImportRequest request, CancellationToken ct)
     {
         var cmd = new ImportLogoProductsCommand(
-            TenantId, request.LogoConnectionId, request.WooStoreId, request.MaxItems);
+            TenantId, request.LogoConnectionId, request.WooStoreId, request.MaxScan);
         var result = await mediator.Send(cmd, ct);
         if (!result.IsSuccess)
             return BadRequest(ApiResponse<object>.Fail(result.Error!));
@@ -184,7 +184,7 @@ public sealed class ProductsController(
 public sealed record ProductImportRequest(
     Guid LogoConnectionId,
     Guid WooStoreId,
-    int  MaxItems = 0);   // 0 = tum katalog
+    int  MaxScan = 0);   // 0 = tum katalog
 
 public sealed record DeleteProductsRequest(
     List<Guid>? Ids          = null,

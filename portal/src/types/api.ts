@@ -222,6 +222,7 @@ export interface ImportResult {
   created: number;
   alreadyExists: number;
   pricesMatched: number;
+  stockMatched: number;
   completed: boolean;
   warning: string | null;
 }
