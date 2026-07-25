@@ -14,6 +14,7 @@ namespace Senkora.Infrastructure.ExternalServices.Logo;
 public sealed class LogoProductService(
     LogoRestClient client,
     ILogoSqlService sqlService,
+    ILogoSchemaService schema,
     ILogger<LogoProductService> logger) : ILogoProductService
 {
     private static readonly int[] AllowedCardTypes = [1, 12];   // TM, MM
@@ -165,54 +166,64 @@ public sealed class LogoProductService(
     /// Logo SQL servisi:  POST /api/v1/queries/unsafe?cmdTimeout=N
     ///                    Body: "SELECT ..."  (JSON string)
     /// </summary>
+    /// <summary>
+    /// Stok miktarlari. Tablo adi Logo kurulumuna gore degistigi icin
+    /// once sema kesfi yapilir, sonra sorgu calistirilir.
+    /// </summary>
     public async Task<Dictionary<long, decimal>> FetchStockAsync(
         string restUrl, string accessToken,
         int firmNo, int periodNo, CancellationToken ct = default)
     {
-        var map    = new Dictionary<long, decimal>();
-        var firm   = firmNo.ToString("D3");
-        var period = periodNo.ToString("D2");
+        var map = new Dictionary<long, decimal>();
 
-        var sqls = new[]
+        var table = await schema.ResolveStockTableAsync(
+            restUrl, accessToken, firmNo, periodNo, ct);
+
+        if (table is null)
         {
-            // Aktif malzemelerin ambar toplami
-            $"SELECT S.STOCKREF, SUM(S.ONHAND) AS ONHAND " +
-            $"FROM LG_{firm}_{period}_STINVTOT S " +
+            logger.LogWarning(
+                "Stok tablosu bulunamadi (firma {Firm}, donem {Period})", firmNo, periodNo);
+            return map;
+        }
+
+        var firm = firmNo.ToString("D3");
+
+        var queries = new[]
+        {
+            // Ana ambar toplami
+            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND FROM {table} " +
+            $"WHERE INVENNO = -1 GROUP BY STOCKREF",
+
+            // Tum ambarlar
+            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND FROM {table} GROUP BY STOCKREF",
+
+            // Aktif malzemelerle sinirla
+            $"SELECT S.STOCKREF, SUM(S.ONHAND) AS ONHAND FROM {table} S " +
             $"INNER JOIN LG_{firm}_ITEMS I ON I.LOGICALREF = S.STOCKREF " +
-            $"WHERE I.ACTIVE = 0 " +
-            $"GROUP BY S.STOCKREF",
-
-            // Join'siz sade surum
-            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND " +
-            $"FROM LG_{firm}_{period}_STINVTOT GROUP BY STOCKREF",
-
-            // View olarak tanimliysa
-            $"SELECT STOCKREF, SUM(ONHAND) AS ONHAND " +
-            $"FROM LV_{firm}_{period}_STINVTOT GROUP BY STOCKREF",
+            $"WHERE I.ACTIVE = 0 GROUP BY S.STOCKREF",
         };
 
         string? lastError = null;
 
-        foreach (var sql in sqls)
+        foreach (var q in queries)
         {
-            var res = await sqlService.QueryAsync(restUrl, accessToken, sql, 120, ct);
+            var res = await sqlService.QueryAsync(restUrl, accessToken, q, 120, ct);
 
             if (res.Success && res.RawJson is not null)
             {
                 if (TryFillStock(res.RawJson, map))
                 {
                     logger.LogInformation(
-                        "Stok alindi ({Variant}): {Count} malzeme", res.UsedVariant, map.Count);
+                        "Stok alindi ({Table}, {Variant}): {Count} malzeme",
+                        table, res.UsedVariant, map.Count);
                     return map;
                 }
             }
-            else
-            {
-                lastError = res.Error;
-            }
+            else lastError = res.Error;
         }
 
-        logger.LogWarning("Stok bilgisi alinamadi. Son hata: {Error}", lastError);
+        logger.LogWarning(
+            "Stok okunamadi ({Table}). Son hata: {Error}", table, lastError);
         return map;
     }
 

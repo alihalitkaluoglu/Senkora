@@ -62,6 +62,10 @@ export const logoApi = {
     username: string; password: string; firmNo: number;
   }) => api.post<ApiResponse<LogoTestResult>>('api/v1/logo/connections/test', d),
 
+  findTables: (connectionId: string, pattern: string) =>
+    api.get<ApiResponse<string[]>>(
+      `api/v1/logo/connections/${connectionId}/find-tables`, { params: { pattern } }),
+
   probeSql: (connectionId: string, sql?: string) =>
     api.get<ApiResponse<LogoSqlProbe[]>>(
       `api/v1/logo/connections/${connectionId}/probe-sql`, { params: { sql } }),

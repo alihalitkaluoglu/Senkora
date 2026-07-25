@@ -41,3 +41,36 @@ public sealed class ProbeLogoSqlQueryHandler(
         return Result<List<LogoSqlProbe>>.Success(probes);
     }
 }
+
+
+/// <summary>Logo veritabaninda ada gore tablo arar.</summary>
+public sealed record FindLogoTablesQuery(
+    Guid   TenantId,
+    Guid   LogoConnectionId,
+    string Pattern) : IRequest<Result<List<string>>>;
+
+public sealed class FindLogoTablesQueryHandler(
+    ILogoConnectionResolver resolver,
+    ILogoSchemaService schema)
+    : IRequestHandler<FindLogoTablesQuery, Result<List<string>>>
+{
+    public async Task<Result<List<string>>> Handle(
+        FindLogoTablesQuery request, CancellationToken ct)
+    {
+        LogoConnectionInfo conn;
+        try
+        {
+            conn = await resolver.ResolveAsync(request.TenantId, request.LogoConnectionId, ct);
+        }
+        catch (Exception ex)
+        {
+            return Result<List<string>>.Failure(
+                $"Logo baglantisi kurulamadi: {ex.Message}", "CONNECTION_FAILED");
+        }
+
+        var tables = await schema.FindTablesAsync(
+            conn.RestUrl, conn.AccessToken, request.Pattern, ct);
+
+        return Result<List<string>>.Success(tables);
+    }
+}

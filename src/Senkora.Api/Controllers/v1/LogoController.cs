@@ -91,6 +91,22 @@ public sealed class LogoController(
     }
 
     /// <summary>Fiyat kriterleri icin Logo secim listeleri (proje, TIG, masraf merkezi)</summary>
+    /// <summary>Logo veritabaninda ada gore tablo arar (sema kesfi).</summary>
+    [HttpGet("connections/{id:guid}/find-tables")]
+    public async Task<IActionResult> FindTables(
+        Guid id, [FromQuery] string pattern, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(pattern))
+            return BadRequest(ApiResponse<object>.Fail("Arama metni gerekli."));
+
+        var result = await mediator.Send(
+            new FindLogoTablesQuery(TenantId, id, pattern), ct);
+
+        if (!result.IsSuccess)
+            return BadRequest(ApiResponse<object>.Fail(result.Error!));
+        return Ok(ApiResponse<List<string>>.Ok(result.Data!));
+    }
+
     /// <summary>
     /// Logo REST'in hangi SQL cagri bicimini kabul ettigini test eder.
     /// Stok ve ticari islem grubu sorgulari calismiyorsa buradan tespit edilir.

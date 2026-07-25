@@ -25,45 +25,40 @@ public sealed class LogoSqlService(
         Func<string, object?>        BuildBody,          // sql => body (null = GET)
         bool   IsPost);
 
+    /// <summary>
+    /// Test sonucuna gore dogrulanmis sirali liste.
+    /// Calisan bicimler: GET ?tsql= , POST unsafe (ham string), POST queries (ham string)
+    /// </summary>
     private static readonly Variant[] Variants =
     [
-        // ── GET varyantlari ──────────────────────────────────────────────────
-        new("GET ?query=",
-            (b, s) => $"{b}/api/v1/queries?query={Uri.EscapeDataString(s)}",
-            _ => null, false),
-
         new("GET ?tsql=",
             (b, s) => $"{b}/api/v1/queries?tsql={Uri.EscapeDataString(s)}",
+            _ => null, false),
+
+        new("POST unsafe (ham string)",
+            (b, _) => $"{b}/api/v1/queries/unsafe?cmdTimeout=120",
+            s => JsonConvert.SerializeObject(s), true),
+
+        new("POST queries (ham string)",
+            (b, _) => $"{b}/api/v1/queries",
+            s => JsonConvert.SerializeObject(s), true),
+
+        // Diger surumler icin yedek bicimler
+        new("GET ?query=",
+            (b, s) => $"{b}/api/v1/queries?query={Uri.EscapeDataString(s)}",
             _ => null, false),
 
         new("GET ?sql=",
             (b, s) => $"{b}/api/v1/queries?sql={Uri.EscapeDataString(s)}",
             _ => null, false),
 
-        new("GET unsafe?query=",
-            (b, s) => $"{b}/api/v1/queries/unsafe?query={Uri.EscapeDataString(s)}",
-            _ => null, false),
-
-        // ── POST varyantlari ─────────────────────────────────────────────────
-        new("POST unsafe (ham string)",
-            (b, _) => $"{b}/api/v1/queries/unsafe?cmdTimeout=60",
-            s => JsonConvert.SerializeObject(s), true),
-
         new("POST unsafe {query}",
-            (b, _) => $"{b}/api/v1/queries/unsafe?cmdTimeout=60",
+            (b, _) => $"{b}/api/v1/queries/unsafe?cmdTimeout=120",
             s => new { query = s }, true),
 
-        new("POST unsafe {tsql}",
-            (b, _) => $"{b}/api/v1/queries/unsafe?cmdTimeout=60",
-            s => new { tsql = s }, true),
-
-        new("POST queries {query}",
-            (b, _) => $"{b}/api/v1/queries",
-            s => new { query = s }, true),
-
-        new("POST queries (ham string)",
-            (b, _) => $"{b}/api/v1/queries",
-            s => JsonConvert.SerializeObject(s), true),
+        new("POST unsafe {sqlQuery}",
+            (b, _) => $"{b}/api/v1/queries/unsafe?cmdTimeout=120",
+            s => new { sqlQuery = s }, true),
     ];
 
     public async Task<LogoSqlResult> QueryAsync(
