@@ -5,8 +5,8 @@ using Senkora.Application.Common.Models;
 namespace Senkora.Application.Features.Products.Queries;
 
 /// <summary>
-/// Tani amacli: Logo REST'ten gelen ham yaniti ve parse sonucunu dondurur.
-/// Sorun tespitinde kullanilir.
+/// Tani: Logo REST'ten gelen ham yaniti, calisan sorgu bicimini ve
+/// fiyat karti alanlarini gosterir.
 /// </summary>
 public sealed record DiagnoseLogoFetchQuery(
     Guid TenantId,
@@ -24,11 +24,15 @@ public sealed record LogoFetchDiagnostics(
     string? ErrorMessage,
     string? ErrorStage,
     // Fiyat karti tanisi
-    string? PriceRequestUrl    = null,
-    bool    PriceRequestOk     = false,
-    int     PriceRecordCount   = 0,
-    string? FirstPriceJson     = null,
-    string? PriceErrorMessage  = null);
+    string? PriceRequestUrl   = null,
+    bool    PriceRequestOk    = false,
+    int     PriceRecordCount  = 0,
+    string? FirstPriceJson    = null,
+    string? PriceErrorMessage = null,
+    // Stok tanisi
+    bool    StockQueryOk      = false,
+    int     StockRecordCount  = 0,
+    string? StockErrorMessage = null);
 
 public sealed class DiagnoseLogoFetchQueryHandler(
     ILogoConnectionResolver resolver,
@@ -53,15 +57,14 @@ public sealed class DiagnoseLogoFetchQueryHandler(
                 ErrorMessage: ex.Message, ErrorStage: "TOKEN"));
         }
 
-        var result = await diagnostics.ProbeItemsAsync(
-            info.RestUrl, info.AccessToken, request.Limit, ct);
+        var result = await diagnostics.ProbeAsync(
+            info.RestUrl, info.AccessToken, info.FirmNo, info.PeriodNo, request.Limit, ct);
 
         return Result<LogoFetchDiagnostics>.Success(result with
         {
             TokenObtained = true,
             TokenPreview  = info.AccessToken.Length > 24
-                ? info.AccessToken[..24] + "..."
-                : info.AccessToken
+                ? info.AccessToken[..24] + "..." : info.AccessToken
         });
     }
 }

@@ -4,6 +4,8 @@ namespace Senkora.Application.Common.Interfaces;
 
 public interface ILogoDiagnosticsService
 {
-    Task<LogoFetchDiagnostics> ProbeItemsAsync(
-        string restUrl, string accessToken, int limit, CancellationToken ct = default);
+    Task<LogoFetchDiagnostics> ProbeAsync(
+        string restUrl, string accessToken,
+        int firmNo, int periodNo, int limit,
+        CancellationToken ct = default);
 }

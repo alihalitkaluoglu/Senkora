@@ -5,13 +5,12 @@ using Senkora.Application.Common.Interfaces;
 namespace Senkora.Infrastructure.ExternalServices.Logo;
 
 /// <summary>
-/// Logo secim listeleri.
+/// Logo secim listeleri (fiyat kriterleri icin).
 ///
-/// Swagger incelemesi sonucu:
-///   /api/v1/projects          → Projeler (REST var)
-///   /api/v1/overheadAccounts  → Masraf Merkezleri (REST var)
-///   Ticari Islem Grubu        → REST endpoint YOK
-///                               LG_{firma}_TRADGRP tablosundan SQL ile alinir
+///   Projeler        → /api/v1/projects          (REST)
+///   Masraf merkezi  → /api/v1/overheadAccounts  (REST)
+///   Ticari islem gr → L_TRADGRP tablosu, SQL (queries) ile
+///                     REST endpoint'i yoktur.
 /// </summary>
 public sealed class LogoLookupService(
     LogoRestClient client,
@@ -21,13 +20,13 @@ public sealed class LogoLookupService(
         string restUrl, string accessToken, int firmNo, CancellationToken ct = default)
     {
         var projects = await FetchRestAsync(restUrl, accessToken, "projects", "Projeler", ct);
-        var costs    = await FetchRestAsync(restUrl, accessToken, "overheadAccounts", "Masraf Merkezleri", ct);
+        var costs    = await FetchRestAsync(restUrl, accessToken, "overheadAccounts",
+                                            "Masraf Merkezleri", ct);
         var trading  = await FetchTradingGroupsAsync(restUrl, accessToken, firmNo, ct);
 
         return new LogoLookupResult(projects, trading, costs);
     }
 
-    // ── REST endpoint'i olan listeler ─────────────────────────────────────────
     private async Task<LogoLookupSet> FetchRestAsync(
         string restUrl, string accessToken, string endpoint,
         string label, CancellationToken ct)
@@ -87,30 +86,26 @@ public sealed class LogoLookupService(
         var list = result.DistinctBy(x => x.Code).OrderBy(x => x.Code).ToList();
         logger.LogInformation("{Label}: {Count} kayit", label, list.Count);
 
-        return new LogoLookupSet(
-            list,
-            $"/api/v1/{endpoint}",
+        return new LogoLookupSet(list, $"/api/v1/{endpoint}",
             list.Count == 0 ? $"{label} listesi bos. Logo'da tanim var mi?" : null);
     }
 
-    // ── Ticari islem grubu: SQL ile ───────────────────────────────────────────
     private async Task<LogoLookupSet> FetchTradingGroupsAsync(
         string restUrl, string accessToken, int firmNo, CancellationToken ct)
     {
         var firm = firmNo.ToString("D3");
 
-        // Logo Tiger'da ticari islem grubu tanimlari LG_{firma}_TRADGRP tablosundadir.
-        // Cari karttan DISTINCT cekmek yaniltici sonuc verir, kullanilmaz.
+        // L_TRADGRP firma bagimsiz ortak tablodur — once o denenir.
         var attempts = new (string Table, string Sql)[]
         {
+            ("L_TRADGRP",
+             "SELECT CODE, DEFINITION_ FROM L_TRADGRP ORDER BY CODE"),
+
             ($"LG_{firm}_TRADGRP",
              $"SELECT CODE, DEFINITION_ FROM LG_{firm}_TRADGRP ORDER BY CODE"),
 
             ($"LG_{firm}_TRADINGGRP",
              $"SELECT CODE, DEFINITION_ FROM LG_{firm}_TRADINGGRP ORDER BY CODE"),
-
-            ($"L_TRADGRP",
-             $"SELECT CODE, DEFINITION_ FROM L_TRADGRP ORDER BY CODE"),
         };
 
         var errors = new List<string>();
@@ -119,21 +114,12 @@ public sealed class LogoLookupService(
         {
             try
             {
-                var url  = $"{restUrl.TrimEnd('/')}/api/v1/queries" +
-                           $"?tsql={Uri.EscapeDataString(sql)}";
+                var url  = $"{restUrl.TrimEnd('/')}/api/v1/queries?tsql={Uri.EscapeDataString(sql)}";
                 var json = await client.GetAsync(url, accessToken, ct);
 
                 var arr = Extract(json, out var apiErr);
-                if (apiErr is not null)
-                {
-                    errors.Add($"{table}: {Short(apiErr)}");
-                    continue;
-                }
-                if (arr.Count == 0)
-                {
-                    errors.Add($"{table}: tablo bos");
-                    continue;
-                }
+                if (apiErr is not null) { errors.Add($"{table}: {Short(apiErr)}"); continue; }
+                if (arr.Count == 0)     { errors.Add($"{table}: bos"); continue; }
 
                 var list = arr
                     .Select(t => new LogoLookupItem(
@@ -153,18 +139,15 @@ public sealed class LogoLookupService(
 
                 errors.Add($"{table}: gecerli kod yok");
             }
-            catch (Exception ex)
-            {
-                errors.Add($"{table}: {Short(ex.Message)}");
-            }
+            catch (Exception ex) { errors.Add($"{table}: {Short(ex.Message)}"); }
         }
 
         var detail = errors.Count > 0 ? " Denenen: " + string.Join(" | ", errors) : "";
         logger.LogWarning("Ticari islem grubu alinamadi.{Detail}", detail);
 
         return new LogoLookupSet([], "SQL (queries)",
-            "Ticari islem grubu listesi alinamadi. Logo REST'te SQL sorgu yetkisi " +
-            "kapali olabilir veya tanim yok — kodu elle yazabilirsiniz." + detail);
+            "Ticari islem grubu alinamadi. Logo REST'te SQL sorgu yetkisi kapali " +
+            "olabilir — kodu elle yazabilirsiniz." + detail);
     }
 
     private static JArray Extract(string raw, out string? apiError)
@@ -186,6 +169,5 @@ public sealed class LogoLookupService(
             ?? obj["value"] as JArray ?? obj["data"] as JArray ?? [];
     }
 
-    private static string Short(string s)
-        => s.Length > 160 ? s[..160] + "..." : s;
+    private static string Short(string s) => s.Length > 160 ? s[..160] + "..." : s;
 }
