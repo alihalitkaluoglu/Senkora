@@ -1,7 +1,6 @@
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using Senkora.Application.Common.Interfaces;
 using Senkora.Application.Common.Models;
 using Senkora.Domain.Entities.Catalog;
@@ -18,8 +17,8 @@ public sealed record ImportLogoProductsCommand(
     Guid TenantId,
     Guid LogoConnectionId,
     Guid WooStoreId,
-    /// <summary>0 = sinirsiz (tum katalog)</summary>
-    int  MaxItems = 0) : IRequest<Result<ImportResult>>;
+    int  MaxItems = 0)   // 0 = sinirsiz (tum katalog)
+    : IRequest<Result<ImportResult>>;
 
 public sealed record ImportResult(
     int  Scanned,

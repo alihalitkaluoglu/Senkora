@@ -54,7 +54,7 @@ public sealed class ProductsController(
     [HttpPost("import")]
     [Authorize(Policy = "SyncManager")]
     public async Task<IActionResult> Import(
-        [FromBody] ImportRequest request, CancellationToken ct)
+        [FromBody] ProductImportRequest request, CancellationToken ct)
     {
         var cmd = new ImportLogoProductsCommand(
             TenantId, request.LogoConnectionId, request.WooStoreId, request.MaxItems);
@@ -72,7 +72,7 @@ public sealed class ProductsController(
     [HttpPost("refresh")]
     [Authorize(Policy = "SyncManager")]
     public async Task<IActionResult> Refresh(
-        [FromBody] RefreshRequest request, CancellationToken ct)
+        [FromBody] ProductRefreshRequest request, CancellationToken ct)
     {
         var cmd = new RefreshLogoProductsCommand(
             TenantId, request.LogoConnectionId, request.WooStoreId, request.PreviewOnly);
@@ -167,13 +167,12 @@ public sealed class ProductsController(
     }
 }
 
-public sealed record ImportRequest(
+public sealed record ProductImportRequest(
     Guid LogoConnectionId,
     Guid WooStoreId,
-    /// <summary>0 = tum katalog</summary>
-    int  MaxItems = 0);
+    int  MaxItems = 0);   // 0 = tum katalog
 
-public sealed record RefreshRequest(
+public sealed record ProductRefreshRequest(
     Guid LogoConnectionId,
     Guid WooStoreId,
     bool PreviewOnly = false);

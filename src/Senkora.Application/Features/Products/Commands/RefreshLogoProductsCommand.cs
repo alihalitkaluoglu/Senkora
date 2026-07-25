@@ -17,8 +17,8 @@ public sealed record RefreshLogoProductsCommand(
     Guid TenantId,
     Guid LogoConnectionId,
     Guid WooStoreId,
-    /// <summary>true ise sadece degisiklik ozeti doner, kayit yapmaz</summary>
-    bool PreviewOnly = false) : IRequest<Result<RefreshResult>>;
+    bool PreviewOnly = false)   // true = sadece degisiklik ozeti, kayit yapmaz
+    : IRequest<Result<RefreshResult>>;
 
 public sealed record RefreshResult(
     int Total,
